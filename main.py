@@ -72,6 +72,11 @@ class RUNME_GUI:
         self.cancel_button = None
         self.reconnect_button = None
 
+        # Packing Checklist variables
+        self.pack_check_1 = tk.BooleanVar()
+        self.pack_check_2 = tk.BooleanVar()
+        self.pack_check_3 = tk.BooleanVar()
+
         # Pen position and control variables
         self.pen_down_z_var = tk.StringVar(value=str(DEFAULT_PEN_DOWN_Z))
         self.safe_center_z_var = tk.StringVar(value=str(-120.0))
@@ -101,7 +106,7 @@ class RUNME_GUI:
         # Start the application
         self.main_page()
 
-    # --- Drawing Logic Methods (Refactored) ---
+    # --- Drawing Logic Methods ---
 
     def create_drawing_paths(self, contours_xy, image_width, image_height, optimize_paths=True):
         """
@@ -325,7 +330,7 @@ class RUNME_GUI:
             status_text = f"Status: {last_status}"
             if self.last_drawing_status["total_commands"] > 0:
                 status_text += f" (Stopped at command {self.last_drawing_status['completed_commands'] + 1}" \
-                                f" of {self.last_drawing_status['total_commands']})"
+                               f" of {self.last_drawing_status['total_commands']})"
             tk.Label(status_frame, text=status_text).pack(anchor='w', padx=5)
             if self.last_drawing_status["error_message"]:
                 tk.Label(status_frame, text=f"Details: {self.last_drawing_status['error_message']}", wraplength=400).pack(anchor='w', padx=5)
@@ -352,12 +357,77 @@ class RUNME_GUI:
         self.go_home_button = tk.Button(controls_frame, text="Go Home", command=self.go_home_action)
         self.go_home_button.grid(row=4, column=0, columnspan=3, pady=5)
 
+        # --- Packing Position Button ---
+        self.pack_button = tk.Button(controls_frame, text="Packing Position", command=self.packing_checklist_page, bg="#FFCCCB")
+        self.pack_button.grid(row=5, column=0, columnspan=3, pady=5)
+
         # Main action buttons
         tk.Button(self.main_frame, text="Input Image to Draw",
                   command=self.input_image_page, width=30).pack(pady=5)
         tk.Button(self.main_frame, text="Disconnect",
                   command=self.close_and_return_main, width=30).pack(pady=5)
 
+    # --- Packing Position Workflow ---
+    def packing_checklist_page(self):
+        """Displays the checklist before allowing the robot to pack."""
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Packing Position Checklist", font=("Arial", 16, "bold"), fg="red").pack(pady=10)
+        tk.Label(self.main_frame, text="Warning: This moves the robot to shipping angles.", font=("Arial", 10)).pack(pady=5)
+
+        checklist_frame = tk.Frame(self.main_frame, relief=tk.SUNKEN, borderwidth=1, padx=20, pady=20)
+        checklist_frame.pack(pady=10)
+
+        # Reset variables
+        self.pack_check_1.set(False)
+        self.pack_check_2.set(False)
+        self.pack_check_3.set(False)
+
+        # Checkboxes
+        c1 = tk.Checkbutton(checklist_frame, text="1. All tools have been removed.", variable=self.pack_check_1, command=self.check_packing_conditions)
+        c1.pack(anchor='w', pady=5)
+        c2 = tk.Checkbutton(checklist_frame, text="2. I know what I am doing (MoveAbsJ).", variable=self.pack_check_2, command=self.check_packing_conditions)
+        c2.pack(anchor='w', pady=5)
+        c3 = tk.Checkbutton(checklist_frame, text="3. I am ready to pack.", variable=self.pack_check_3, command=self.check_packing_conditions)
+        c3.pack(anchor='w', pady=5)
+
+        self.confirm_pack_button = tk.Button(self.main_frame, text="Confirm & Pack", command=self.execute_packing_sequence, state=tk.DISABLED, bg="#ff9999", width=20)
+        self.confirm_pack_button.pack(pady=20)
+
+        tk.Button(self.main_frame, text="Back", command=self.drawing_options_page, width=20).pack(pady=5)
+
+    def check_packing_conditions(self):
+        """Enables the pack button only if all checks are true."""
+        if self.pack_check_1.get() and self.pack_check_2.get() and self.pack_check_3.get():
+            self.confirm_pack_button.config(state=tk.NORMAL)
+        else:
+            self.confirm_pack_button.config(state=tk.DISABLED)
+
+    def execute_packing_sequence(self):
+        """Sends the packing command to the robot."""
+        if hasattr(self, 'confirm_pack_button') and self.confirm_pack_button.winfo_exists():
+            self.confirm_pack_button.config(state=tk.DISABLED, text="Sending...")
+        
+        logging.info("Sending robot to Packing Position (MoveAbsJ).")
+        # Send the special command "PACK"
+        threading.Thread(target=self._send_packing_thread, daemon=True).start()
+
+    def _send_packing_thread(self):
+        """Thread to send PACK command and handle response."""
+        command = "PACK"
+        if self.send_message_internal(command):
+            response = self.receive_message_internal(timeout=10.0)
+            if response == "R":
+                logging.info("Packing command confirmed by robot.")
+                self.window.after(0, lambda: messagebox.showinfo("Packing", "Command sent. Robot should be moving to packing position."))
+            else:
+                logging.error(f"Packing command failed confirmation. Got: {response}")
+                self.window.after(0, lambda: messagebox.showerror("Error", f"Robot did not confirm packing command. Got: {response}"))
+        else:
+            self.window.after(0, lambda: messagebox.showerror("Connection Error", "Failed to send packing command."))
+        
+        self.window.after(0, self.drawing_options_page)
+
+    # --- Other Action Methods ---
     def send_to_test_z_action(self):
         """Button action to test the pen_down_z value."""
         try:
@@ -558,7 +628,7 @@ class RUNME_GUI:
                     variable=self.selected_threshold_option,
                     value=label,
                     command=lambda l=label: self.show_edge_preview(l)
-                 )
+                  )
                  rb.pack(anchor='w')
                  if not default_selected:
                       self.selected_threshold_option.set(label)
@@ -947,7 +1017,7 @@ class RUNME_GUI:
                 self.resume_start_index_global = 0
                 self.last_drawing_status["status"] = "Resume Failed"
                 self.last_drawing_status["error_message"] = "Could not reconnect to robot."
-            
+                
                 self.drawing_options_page()
             else:
                 messagebox.showerror("Connection Failed", "Failed to establish connection.")
