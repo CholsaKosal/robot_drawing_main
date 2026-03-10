@@ -1,0 +1,9 @@
+venv/
+llm_control/tools/__pycache__/mcp_tools.cpython-312.pyc
+llm_control/tools/__pycache__/__init__.cpython-312.pyc
+llm_control/model/qwen2.5-7b-instruct-q4_k_m.gguf
+llm_control/llm_engine/__pycache__/agent.cpython-312.pyc
+llm_control/llm_engine/__pycache__/__init__.cpython-312.pyc
+llm_control/core/__pycache__/robot_controller.cpython-312.pyc
+llm_control/core/__pycache__/drawing_processor.cpython-312.pyc
+llm_control/core/__pycache__/__init__.cpython-312.pyc

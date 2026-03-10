@@ -1,0 +1,13 @@
+# uncomment this if you want to use CPU LLM inferencing
+#llama-cpp-python
+
+opencv-python
+numpy
+Pillow
+
+
+# previous conflicting stuff
+pyyaml
+setuptools
+typeguard
+# clearpath-config
