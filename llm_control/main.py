@@ -1,7 +1,7 @@
-# robot_drawing_main/llm_control/main.py features: similar to robot_drawing_main/main.py but using custom mcp and self host a llm to control instead of buttons. user interact with text input. It must match all the steps in robot_drawing_main/main.py. It relys on its own python environment, so readme.md and requirements.txt must be set up correctly. 
 import sys
 import os
 from llm_engine.agent import LLMAgent
+from tools import mcp_tools
 
 def main():
     print("=====================================================")
@@ -11,7 +11,6 @@ def main():
     
     agent = LLMAgent()
     
-    # Scan image directory so the AI secretly knows what's available for later
     base_dir = os.path.dirname(os.path.abspath(__file__))
     image_dir = os.path.join(base_dir, "image")
     
@@ -21,12 +20,12 @@ def main():
         for f in os.listdir(image_dir):
             if os.path.splitext(f)[1].lower() in valid_exts:
                 abs_path = os.path.join(image_dir, f)
-                abs_path = abs_path.replace("\\", "/") # Sanitize paths for JSON tool calls
+                abs_path = abs_path.replace("\\", "/") 
                 available_images.append((f, abs_path))
     
     images_info = "\n".join([f"- {name} (Path: {path})" for name, path in available_images]) if available_images else "No images found."
     
-    # --- NEW FEATURE: Initial Prompt enforces the GUI Workflow ---
+    # Updated prompt to explicitly block premature tool usage
     initial_prompt = (
         "System Notification: The application has just started. "
         "You MUST guide the user through the following strict workflow, mimicking a GUI application:\n"
@@ -36,18 +35,18 @@ def main():
         f"Available local images for step 3 are:\n{images_info}\n\n"
         "ACTION REQUIRED NOW: Greet the user. State that the first step is to establish a connection. "
         "Ask them if they would like to connect to the 'simulation' or the 'real' robot. "
-        "Do NOT mention the available images or drawing yet."
+        "CRITICAL: DO NOT OUTPUT ANY TOOL CALLS RIGHT NOW. Just speak to the user naturally."
     )
     
     print("\nAssistant > ", end="", flush=True)
-    # Process the hidden system prompt to generate the opening message
     for chunk in agent.process_user_input(initial_prompt):
         print(chunk, end="", flush=True)
     print()
     
     while True:
         try:
-            user_input = input("\nUser > ")
+            # Display both current Z values directly in the user prompt!
+            user_input = input(f"\nUser (Pen Z: {mcp_tools.CURRENT_PEN_DOWN_Z} | Safe Z: {mcp_tools.CURRENT_SAFE_CENTER_Z}) > ")
             if user_input.strip().lower() in ['exit', 'quit']:
                 print("Shutting down...")
                 break
@@ -57,10 +56,9 @@ def main():
                 
             print("\nAssistant > ", end="", flush=True)
             
-            # Streams chunks, executes tools in the background, and streams the follow-up seamlessly
             for chunk in agent.process_user_input(user_input):
                 print(chunk, end="", flush=True)
-            print() # Print a final newline when the conversational turn is fully resolved
+            print()
             
         except KeyboardInterrupt:
             print("\nShutting down...")
