@@ -49,22 +49,18 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
 
         for thresh in thresholds:
             _, binary = cv2.threshold(smoothed, thresh, 255, cv2.THRESH_BINARY)
-            contours_topo, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # FIX: Use CHAIN_APPROX_NONE to extract ultra-dense raw pixel points, exactly like Mode 1
+            contours_topo, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
             
             for contour in contours_topo:
                 if cv2.arcLength(contour, closed=True) > self.min_contour_length_px:
-                    epsilon = 0.002 * cv2.arcLength(contour, True)
-                    # FIX 1: Ensure approxPolyDP treats the contour as closed
-                    approx_contour = cv2.approxPolyDP(contour, epsilon, True)
-
-                    points = approx_contour.squeeze().tolist()
+                    
+                    # FIX: Removed approxPolyDP completely so it doesn't skip points or cut corners
+                    points = contour.squeeze().tolist()
                     if not isinstance(points, list) or not points: continue
                     if isinstance(points[0], int): points = [points]
                     path = [(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) == 2]
-                    
-                    # FIX 2: Manually close the physical loop for the robot to prevent gaps
-                    if len(path) > 2 and path[0] != path[-1]:
-                        path.append(path[0])
                     
                     if path: all_paths_xy.append(path)
                     
@@ -146,13 +142,11 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
                             cv2.drawContours(eye_fill_mask, [contour], -1, 255, thickness=cv2.FILLED)
                             break
 
-        # 6. MATHEMATICALLY DENSE HATCHING (Mode 8 Override)
-        # Bypassing findContours to generate perfect, connected straight-line strokes
+        # 6. MATHEMATICALLY DENSE HATCHING
         hatch_paths = self._generate_dense_hatching_paths(eye_fill_mask, spacing_px=2)
         
         for path in hatch_paths:
             all_paths_xy.append(path)
-            # Draw the lines explicitly on the preview so you can see the result
             cv2.line(preview_bgr, path[0], path[-1], (0, 0, 0), 1)
 
         dot_radius = max(4, int(image_width * 0.005))
@@ -178,15 +172,12 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
         def extract_segments(line_points):
             current_path = []
             for x, y in line_points:
-                # If the point is inside the dark area, add it to our current stroke
                 if 0 <= y < h and 0 <= x < w and binary_mask[y, x] > 0:
                     current_path.append((x, y))
                 else:
-                    # If we hit an empty space, cap the current stroke and save it
                     if len(current_path) > 1:
                         paths.append([current_path[0], current_path[-1]])
                     current_path = []
-            # Catch any remaining stroke at the edge of the image
             if len(current_path) > 1:
                 paths.append([current_path[0], current_path[-1]])
 
