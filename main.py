@@ -5,7 +5,7 @@ import threading
 import time
 import logging
 import socket
-import shutil # <--- NEW IMPORT needed for copying the image
+import shutil
 from typing import List, Tuple, Optional
 from PIL import Image, ImageTk
 
@@ -17,6 +17,7 @@ from sharp_detail_processor import SharpDetailProcessor
 from fast_eye_tier_processor import FastEyeTierProcessor
 from smart_auto_eye_processor import SmartAutoEyeProcessor
 from real_image_drawing_processor import RealImageDrawingProcessor
+from smooth_auto_eye_processor import SmoothAutoEyeProcessor  # <--- NEW IMPORT
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -96,6 +97,11 @@ class RUNME_GUI:
             a4_height_mm=A4_HEIGHT_MM, 
             min_contour_length_px=MIN_CONTOUR_LENGTH_PX
         )
+        self.smooth_eye_processor = SmoothAutoEyeProcessor(
+            a4_width_mm=A4_WIDTH_MM, 
+            a4_height_mm=A4_HEIGHT_MM, 
+            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
+        ) # <--- NEW PROCESSOR
 
         # Processing Mode Variables
         self.processing_mode_var = tk.StringVar(value="classic")
@@ -421,11 +427,12 @@ class RUNME_GUI:
         tk.Radiobutton(mode_frame, text="Mode 5: Fast Tiered (Interactive Eye Fill)", variable=self.processing_mode_var, value="fast_eye").pack(anchor='w')        
         tk.Radiobutton(mode_frame, text="Mode 6: Smart Auto-Pair Eye Fill + Interactive", variable=self.processing_mode_var, value="smart_auto").pack(anchor='w')
         tk.Radiobutton(mode_frame, text="Mode 7: Real Image Shortcut (60-Tier Medium Pass)", variable=self.processing_mode_var, value="real_image").pack(anchor='w')
+        tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w') # <--- NEW MODE 8
 
-        # Slider specifically for Modes 3, 5, 6
+        # Slider specifically for Modes 3, 5, 6, 8
         tier_frame = tk.Frame(mode_frame)
         tier_frame.pack(pady=5)
-        tk.Label(tier_frame, text="Number of Tiers (Modes 3, 5 & 6):").pack(side=tk.LEFT)
+        tk.Label(tier_frame, text="Number of Tiers (Modes 3, 5, 6 & 8):").pack(side=tk.LEFT)
         tk.Scale(tier_frame, variable=self.tier_var, from_=2, to=60, orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=10)
 
         tk.Button(self.main_frame, text="Process Image", command=self.process_input_image, width=20).pack(pady=10)
@@ -462,7 +469,8 @@ class RUNME_GUI:
             "sharp": "Raw Detail Mode",
             "fast_eye": "Fast Tiered Mode", 
             "smart_auto": "Smart Auto-Eye Mode",
-            "real_image": "Real Image Shortcut Mode"
+            "real_image": "Real Image Shortcut Mode",
+            "smooth_eye": "Enhanced Smooth Auto-Eye Mode" # <--- NEW MODE LABEL
         }
         mode_str = mode_names.get(mode, mode)
 
@@ -484,7 +492,7 @@ class RUNME_GUI:
         left_frame.pack(side=tk.LEFT, padx=20, fill=tk.BOTH, expand=True)
         tk.Label(left_frame, text="Preview", font=("Arial", 12, "bold")).pack(pady=5)
         
-        self.preview_label = tk.Label(left_frame, cursor="crosshair" if mode in ["fast_eye", "smart_auto", "real_image"] else "arrow")
+        self.preview_label = tk.Label(left_frame, cursor="crosshair" if mode in ["fast_eye", "smart_auto", "real_image", "smooth_eye"] else "arrow")
         self.preview_label.pack(pady=5)
 
         right_frame = tk.Frame(content_frame)
@@ -494,12 +502,12 @@ class RUNME_GUI:
         options_frame = tk.Frame(right_frame)
         options_frame.pack(pady=5, fill=tk.BOTH, expand=True)
 
-        # Inject interactive UI controls specifically for Mode 5, 6 & 7
-        if mode in ["fast_eye", "smart_auto", "real_image"]:
+        # Inject interactive UI controls specifically for Mode 5, 6, 7 & 8
+        if mode in ["fast_eye", "smart_auto", "real_image", "smooth_eye"]:
             instruction_frame = tk.Frame(options_frame)
             instruction_frame.pack(pady=5)
             tk.Label(instruction_frame, text="💡 Click on the PREVIEW IMAGE to fill eyes.\n(Candidate areas are outlined in pink)", fg="blue", justify=tk.CENTER).pack()
-            if mode in ["smart_auto", "real_image"]:
+            if mode in ["smart_auto", "real_image", "smooth_eye"]:
                 tk.Label(instruction_frame, text="(Green dots = Auto-detected, Blue dots = Manual clicks)", fg="green").pack()
             tk.Button(instruction_frame, text="Clear Selections", command=self.clear_eye_selections).pack(pady=5)
 
@@ -520,7 +528,7 @@ class RUNME_GUI:
 
     def on_preview_click(self, event):
         """Handles user clicking the preview image to add eye fill targets"""
-        if self.processing_mode_var.get() not in ["fast_eye", "smart_auto", "real_image"]: 
+        if self.processing_mode_var.get() not in ["fast_eye", "smart_auto", "real_image", "smooth_eye"]: 
             return
         if not hasattr(self, 'preview_thumb_size'): 
             return
@@ -555,6 +563,11 @@ class RUNME_GUI:
         elif mode == "real_image":
             # Mode 7 is a hardcoded shortcut, so it only presents one option
             options_to_run.append(("Optimal Real Image (60 Tiers, Medium Pass)", 0, 0))
+        elif mode == "smooth_eye": # <--- NEW MODE OPTIONS
+            base_tiers = self.tier_var.get()
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Light)", base_tiers, 1))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Medium)", base_tiers, 2))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavy)", base_tiers, 3))
         else:
             # Modes 3, 5, 6: Give variations for Detail Level using the chosen tier count
             base_tiers = self.tier_var.get()
@@ -596,6 +609,13 @@ class RUNME_GUI:
                     user_eye_points=self.user_eye_points
                 )
                 commands = self.real_image_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+            elif mode == "smooth_eye": # <--- NEW MODE PROCESSOR ROUTING
+                contours_xy, w, h = self.smooth_eye_processor.image_to_smooth_auto_tiers(
+                    image_path, t1, t2, 
+                    save_edge_path=preview_path, 
+                    user_eye_points=self.user_eye_points
+                )
+                commands = self.smooth_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             else:
                 contours_xy, w, h = self.classic_processor.image_to_contours(image_path, t1, t2, save_edge_path=preview_path)
                 commands = self.classic_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
@@ -637,7 +657,7 @@ class RUNME_GUI:
                  time_str = option_data["time_str"]
                  
                  # Clean up the display text based on the mode
-                 if mode in ["tiered", "fast_eye", "smart_auto", "real_image"]:
+                 if mode in ["tiered", "fast_eye", "smart_auto", "real_image", "smooth_eye"]:
                      radio_text = f"{label} - Cmds: {count}, Est: {time_str}"
                  else:
                      radio_text = f"{label} (t1={t1}, t2={t2}) - Cmds: {count}, Est: {time_str}"
@@ -659,7 +679,7 @@ class RUNME_GUI:
          button_frame.pack(pady=20)
          tk.Button(button_frame, text="Confirm and Draw", command=self.confirm_and_start_drawing, width=20).pack(side=tk.LEFT, padx=5)
          tk.Button(button_frame, text="Save Points to File", command=self.save_points_to_file, width=20).pack(side=tk.LEFT, padx=5)
-         tk.Button(button_frame, text="Save Processed Image", command=self.save_processed_image_to_file, width=22).pack(side=tk.LEFT, padx=5) # <--- NEW BUTTON
+         tk.Button(button_frame, text="Save Processed Image", command=self.save_processed_image_to_file, width=22).pack(side=tk.LEFT, padx=5) 
          tk.Button(button_frame, text="Back", command=self.drawing_options_page, width=20).pack(side=tk.LEFT, padx=5)
 
     def save_processed_image_to_file(self):
@@ -730,7 +750,7 @@ class RUNME_GUI:
                    self.preview_label.imgtk = imgtk
                    self.preview_label.configure(image=imgtk)
                    
-                   # Bind the interactive clicking feature for Modes 5, 6 & 7
+                   # Bind the interactive clicking feature for Modes 5, 6, 7 & 8
                    self.preview_label.bind("<Button-1>", self.on_preview_click)
               except Exception as e:
                    logging.error(f"Error loading preview image {preview_path}: {e}")
