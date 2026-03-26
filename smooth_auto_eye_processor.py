@@ -8,7 +8,7 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
     """
     Mode 8: Enhanced Smooth Auto Eye + Denser Fill.
     A variation of Mode 6 focusing on extremely smooth contours (adjusted bilateral filters)
-    and a much denser 4-way cross-hatch fill for the eyes.
+    and a mathematically computed 4-way cross-hatch fill for the eyes to guarantee connected lines.
     """
     def __init__(self, a4_width_mm: float, a4_height_mm: float, min_contour_length_px: int):
         super().__init__(a4_width_mm, a4_height_mm, min_contour_length_px)
@@ -35,7 +35,7 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced_image = clahe.apply(image)
 
-        # Mode 8 specific: highly smooth bilateral filters derived from the "medium edge pass"
+        # Mode 8 specific: highly smooth bilateral filters
         if filter_mode == 1:
             smoothed = cv2.bilateralFilter(enhanced_image, d=9, sigmaColor=70, sigmaSpace=70) # Light Smooth
         elif filter_mode == 2:
@@ -54,12 +54,17 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
             for contour in contours_topo:
                 if cv2.arcLength(contour, closed=True) > self.min_contour_length_px:
                     epsilon = 0.002 * cv2.arcLength(contour, True)
-                    approx_contour = cv2.approxPolyDP(contour, epsilon, False)
+                    # FIX 1: Ensure approxPolyDP treats the contour as closed
+                    approx_contour = cv2.approxPolyDP(contour, epsilon, True)
 
                     points = approx_contour.squeeze().tolist()
                     if not isinstance(points, list) or not points: continue
                     if isinstance(points[0], int): points = [points]
                     path = [(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) == 2]
+                    
+                    # FIX 2: Manually close the physical loop for the robot to prevent gaps
+                    if len(path) > 2 and path[0] != path[-1]:
+                        path.append(path[0])
                     
                     if path: all_paths_xy.append(path)
                     
@@ -141,18 +146,14 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
                             cv2.drawContours(eye_fill_mask, [contour], -1, 255, thickness=cv2.FILLED)
                             break
 
-        # 6. EXTREMELY DENSE HATCHING (Mode 8 Override)
-        hatch_img = self._generate_dense_hatching(eye_fill_mask, spacing_px=2)
-        h_contours, _ = cv2.findContours(hatch_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        # 6. MATHEMATICALLY DENSE HATCHING (Mode 8 Override)
+        # Bypassing findContours to generate perfect, connected straight-line strokes
+        hatch_paths = self._generate_dense_hatching_paths(eye_fill_mask, spacing_px=2)
         
-        for contour in h_contours:
-            points = contour.squeeze().tolist()
-            if not isinstance(points, list) or not points: continue
-            if isinstance(points[0], int): points = [points]
-            path = [(p[0], p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) == 2]
-            if path: all_paths_xy.append(path)
-
-        preview_bgr[hatch_img == 255] = (0, 0, 0)
+        for path in hatch_paths:
+            all_paths_xy.append(path)
+            # Draw the lines explicitly on the preview so you can see the result
+            cv2.line(preview_bgr, path[0], path[-1], (0, 0, 0), 1)
 
         dot_radius = max(4, int(image_width * 0.005))
         for pt in user_eye_points:
@@ -166,24 +167,43 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
 
         return all_paths_xy, image_width, image_height
 
-    def _generate_dense_hatching(self, binary_mask, spacing_px):
+    def _generate_dense_hatching_paths(self, binary_mask, spacing_px):
         """
-        Creates a massive 4-way cross-hatch for incredibly solid fills.
+        Creates mathematically perfect straight-line segments that clip precisely 
+        to the bounds of the binary mask, ensuring the robot draws continuous strokes.
         """
         h, w = binary_mask.shape
-        hatch_img = np.zeros_like(binary_mask)
+        paths = []
         
-        # Draw horizontal lines
+        def extract_segments(line_points):
+            current_path = []
+            for x, y in line_points:
+                # If the point is inside the dark area, add it to our current stroke
+                if 0 <= y < h and 0 <= x < w and binary_mask[y, x] > 0:
+                    current_path.append((x, y))
+                else:
+                    # If we hit an empty space, cap the current stroke and save it
+                    if len(current_path) > 1:
+                        paths.append([current_path[0], current_path[-1]])
+                    current_path = []
+            # Catch any remaining stroke at the edge of the image
+            if len(current_path) > 1:
+                paths.append([current_path[0], current_path[-1]])
+
+        # 1. Horizontal strokes
         for y in range(0, h, spacing_px):
-            cv2.line(hatch_img, (0, y), (w, y), 255, 1)
-        # Draw vertical lines
-        for x in range(0, w, spacing_px):
-            cv2.line(hatch_img, (x, 0), (x, h), 255, 1)
-        # Draw diagonal lines (\)
-        for i in range(-h, w, spacing_px * 2):
-            cv2.line(hatch_img, (i, 0), (i + h, h), 255, 1)
-        # Draw diagonal lines (/)
-        for i in range(0, w + h, spacing_px * 2):
-            cv2.line(hatch_img, (i, 0), (i - h, h), 255, 1)
+            extract_segments([(x, y) for x in range(w)])
             
-        return cv2.bitwise_and(hatch_img, binary_mask)
+        # 2. Vertical strokes
+        for x in range(0, w, spacing_px):
+            extract_segments([(x, y) for y in range(h)])
+            
+        # 3. Diagonal strokes (\)
+        for i in range(-h, w, spacing_px * 2):
+            extract_segments([(i + t, t) for t in range(max(0, -i), min(h, w - i))])
+            
+        # 4. Diagonal strokes (/)
+        for i in range(0, w + h, spacing_px * 2):
+            extract_segments([(i - t, t) for t in range(max(0, i - w + 1), min(h, i + 1))])
+            
+        return paths
