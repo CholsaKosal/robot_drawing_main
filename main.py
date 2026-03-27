@@ -519,21 +519,44 @@ class RUNME_GUI:
         tk.Label(header_frame, text="Image Queue & History (Click image to select):", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
         tk.Button(header_frame, text="Show QR Upload Code", command=self.show_qr_popup, bg="#d4edda", padx=10).pack(side=tk.RIGHT)
         
-        # Scrollable Canvas for Thumbnails
-        canvas_frame = tk.Frame(history_frame, height=150)
+        # Vertical Scrollable Canvas for Thumbnails (Grid Setup)
+        canvas_frame = tk.Frame(history_frame, height=240)
         canvas_frame.pack(fill='x', expand=True, padx=5, pady=5)
         canvas_frame.pack_propagate(False) # Keep height constrained
         
         canvas = tk.Canvas(canvas_frame, bg="#f9f9f9", highlightthickness=0)
-        scrollbar = tk.Scrollbar(canvas_frame, orient="horizontal", command=canvas.xview)
+        scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg="#f9f9f9")
         
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(xscrollcommand=scrollbar.set)
+        canvas.configure(yscrollcommand=scrollbar.set)
         
-        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # --- MOUSE WHEEL SCROLLING LOGIC FOR GALLERY ---
+        def _on_mousewheel(event):
+            # Check for Windows/Mac (event.delta) or Linux (event.num)
+            if hasattr(event, 'delta') and event.delta != 0:
+                direction = -1 if event.delta > 0 else 1
+            else:
+                direction = -1 if event.num == 4 else 1
+            canvas.yview_scroll(direction, "units")
+
+        def _bind_to_mousewheel(event):
+            self.window.bind_all("<MouseWheel>", _on_mousewheel)
+            self.window.bind_all("<Button-4>", _on_mousewheel)
+            self.window.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_from_mousewheel(event):
+            self.window.unbind_all("<MouseWheel>")
+            self.window.unbind_all("<Button-4>")
+            self.window.unbind_all("<Button-5>")
+
+        # Bind when mouse enters/leaves the canvas frame area
+        canvas_frame.bind("<Enter>", _bind_to_mousewheel)
+        canvas_frame.bind("<Leave>", _unbind_from_mousewheel)
 
         def load_selected_from_history(full_path):
             if full_path in self.image_queue:
@@ -545,6 +568,11 @@ class RUNME_GUI:
 
         if os.path.exists(self.history_dir):
             hist_files = sorted(os.listdir(self.history_dir), reverse=True) # Newest first
+            
+            # Grid layout variables
+            max_cols = 4 
+            row, col = 0, 0
+            
             for f in hist_files:
                 full_path = os.path.join(self.history_dir, f)
                 try:
@@ -553,8 +581,8 @@ class RUNME_GUI:
                     photo = ImageTk.PhotoImage(img)
                     self.history_thumbnails.append(photo)
                     
-                    item_frame = tk.Frame(scrollable_frame, bg="#f9f9f9", padx=5)
-                    item_frame.pack(side=tk.LEFT, fill=tk.Y)
+                    item_frame = tk.Frame(scrollable_frame, bg="#f9f9f9", padx=10, pady=5)
+                    item_frame.grid(row=row, column=col)
                     
                     # Apply styling for Queued vs History
                     is_queued = full_path in self.image_queue
@@ -569,6 +597,12 @@ class RUNME_GUI:
                         tk.Label(item_frame, text="QUEUED", fg="red", font=("Arial", 8, "bold"), bg="#f9f9f9").pack()
                     else:
                         tk.Label(item_frame, text="History", fg="gray", font=("Arial", 8), bg="#f9f9f9").pack()
+                        
+                    # Advance grid position
+                    col += 1
+                    if col >= max_cols:
+                        col = 0
+                        row += 1
                         
                 except Exception as e:
                     logging.error(f"Error loading thumbnail for {f}: {e}")
@@ -592,7 +626,7 @@ class RUNME_GUI:
         tk.Label(tier_frame, text="Number of Tiers (Modes 2, 3, 5, 6 & 8):").pack(side=tk.LEFT)
         tk.Scale(tier_frame, variable=self.tier_var, from_=2, to=60, orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=10)
 
-        # NEW: Invert Density Checkbox
+        # Invert Density Checkbox
         self.invert_density_cb = tk.Checkbutton(mode_frame, text="Invert Density (Mode 2: Dense Lines on Lighter Colors)", variable=self.invert_density_var)
         self.invert_density_cb.pack(pady=5)
 
