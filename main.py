@@ -526,10 +526,10 @@ class RUNME_GUI:
         tk.Radiobutton(mode_frame, text="Mode 7: Real Image Shortcut (60-Tier Medium Pass)", variable=self.processing_mode_var, value="real_image").pack(anchor='w')
         tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w')
 
-        # Slider specifically for Modes 3, 5, 6, 8
+        # Slider specifically for Modes 2, 3, 5, 6, 8
         tier_frame = tk.Frame(mode_frame)
         tier_frame.pack(pady=5)
-        tk.Label(tier_frame, text="Number of Tiers (Modes 3, 5, 6 & 8):").pack(side=tk.LEFT)
+        tk.Label(tier_frame, text="Number of Tiers (Modes 2, 3, 5, 6 & 8):").pack(side=tk.LEFT)
         tk.Scale(tier_frame, variable=self.tier_var, from_=2, to=60, orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=10)
 
         tk.Button(self.main_frame, text="Process Image", command=self.process_input_image, width=20, bg="#cce5ff").pack(pady=10)
@@ -591,7 +591,7 @@ class RUNME_GUI:
         left_frame.pack(side=tk.LEFT, padx=20, fill=tk.BOTH, expand=True)
         tk.Label(left_frame, text="Preview", font=("Arial", 12, "bold")).pack(pady=5)
         
-        self.preview_label = tk.Label(left_frame, cursor="crosshair" if mode in ["fast_eye", "smart_auto", "real_image", "smooth_eye"] else "arrow")
+        self.preview_label = tk.Label(left_frame, cursor="crosshair" if mode in ["advanced", "fast_eye", "smart_auto", "real_image", "smooth_eye"] else "arrow")
         self.preview_label.pack(pady=5)
 
         right_frame = tk.Frame(content_frame)
@@ -601,12 +601,12 @@ class RUNME_GUI:
         options_frame = tk.Frame(right_frame)
         options_frame.pack(pady=5, fill=tk.BOTH, expand=True)
 
-        if mode in ["fast_eye", "smart_auto", "real_image", "smooth_eye"]:
+        if mode in ["advanced", "fast_eye", "smart_auto", "real_image", "smooth_eye"]:
             instruction_frame = tk.Frame(options_frame)
             instruction_frame.pack(pady=5)
-            tk.Label(instruction_frame, text="💡 Click on the PREVIEW IMAGE to fill eyes.\n(Candidate areas are outlined in pink)", fg="blue", justify=tk.CENTER).pack()
-            if mode in ["smart_auto", "real_image", "smooth_eye"]:
-                tk.Label(instruction_frame, text="(Green dots = Auto-detected, Blue dots = Manual clicks)", fg="green").pack()
+            tk.Label(instruction_frame, text="💡 Click on the PREVIEW IMAGE to fill eyes.\n(Candidate areas are outlined in pink/green)", fg="blue", justify=tk.CENTER).pack()
+            if mode in ["advanced", "smart_auto", "real_image", "smooth_eye"]:
+                tk.Label(instruction_frame, text="(Green boxes = Auto-detected, Blue dots = Manual clicks)", fg="green").pack()
             tk.Button(instruction_frame, text="Clear Selections", command=self.clear_eye_selections).pack(pady=5)
 
         loading_label = tk.Label(options_frame, text="Processing options in parallel...\nThis may take a moment.")
@@ -626,7 +626,7 @@ class RUNME_GUI:
 
     def on_preview_click(self, event):
         """Handles user clicking the preview image to add eye fill targets"""
-        if self.processing_mode_var.get() not in ["fast_eye", "smart_auto", "real_image", "smooth_eye"]: 
+        if self.processing_mode_var.get() not in ["advanced", "fast_eye", "smart_auto", "real_image", "smooth_eye"]: 
             return
         if not hasattr(self, 'preview_thumb_size'): 
             return
@@ -650,14 +650,16 @@ class RUNME_GUI:
         results = {}
         preview_paths = {}
         mode = self.processing_mode_var.get()
+        base_tiers = self.tier_var.get() 
 
         options_to_run = []
-        if mode in ["classic", "advanced", "sharp"]:
+        if mode in ["classic", "sharp"]:
             options_to_run = THRESHOLD_OPTIONS 
+        elif mode == "advanced":
+            options_to_run = [(f"Option {i} ({base_tiers} Tiers)", i*10, i*20) for i in range(1, 8)]
         elif mode == "real_image":
             options_to_run.append(("Optimal Real Image (60 Tiers, Medium Pass)", 0, 0))
         elif mode == "smooth_eye":
-            base_tiers = self.tier_var.get()
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 1)", base_tiers, 1))
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 2)", base_tiers, 2))
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 3)", base_tiers, 3))
@@ -672,7 +674,6 @@ class RUNME_GUI:
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 4)", base_tiers, 12))
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Maximum)", base_tiers, 13))
         else:
-            base_tiers = self.tier_var.get()
             options_to_run.append((f"{base_tiers} Tiers (High Detail Edge Pass)", base_tiers, 1))
             options_to_run.append((f"{base_tiers} Tiers (Medium Detail Edge Pass)", base_tiers, 2))
             options_to_run.append((f"{base_tiers} Tiers (Low Detail Edge Pass)", base_tiers, 3))
@@ -683,7 +684,8 @@ class RUNME_GUI:
             commands = []
             
             if mode == "advanced":
-                contours_xy, w, h = self.advanced_processor.image_to_contours_and_hatching(image_path, t1, t2, save_edge_path=preview_path)
+                contours_xy, w, h = self.advanced_processor.image_to_contours_and_hatching(
+                    image_path, t1, t2, base_tiers, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
                 if contours_xy: commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "tiered":
                 contours_xy, w, h = self.tiered_processor.image_to_tiered_contours(image_path, t1, t2, save_edge_path=preview_path)
@@ -753,7 +755,7 @@ class RUNME_GUI:
                  count = option_data["count"]
                  time_str = option_data["time_str"]
                  
-                 if mode in ["tiered", "fast_eye", "smart_auto", "real_image", "smooth_eye"]:
+                 if mode in ["advanced", "tiered", "fast_eye", "smart_auto", "real_image", "smooth_eye"]:
                      radio_text = f"{label} - Cmds: {count}, Est: {time_str}"
                  else:
                      radio_text = f"{label} (t1={t1}, t2={t2}) - Cmds: {count}, Est: {time_str}"
