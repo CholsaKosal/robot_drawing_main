@@ -3,6 +3,7 @@ from tkinter import messagebox, filedialog, ttk
 import os
 import threading
 import time
+import datetime
 import logging
 import socket
 import shutil
@@ -63,47 +64,26 @@ class RUNME_GUI:
         self.main_frame = tk.Frame(self.window)
         self.main_frame.pack(pady=20, padx=20, fill="both", expand=True)
 
+        # --- History & Queue Setup ---
+        self.history_dir = os.path.join(DATA_DIR, "temp_history")
+        if os.path.exists(self.history_dir):
+            shutil.rmtree(self.history_dir, ignore_errors=True)
+        os.makedirs(self.history_dir, exist_ok=True)
+        self.image_queue = []
+        
+        # --- Background QR Server ---
+        self.tunnel_url = None
+        threading.Thread(target=self.start_qr_server_bg, daemon=True).start()
+
         # Initialize Image Processors
-        self.classic_processor = ClassicImageProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.advanced_processor = AdvancedImageProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.tiered_processor = TieredContourProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.sharp_processor = SharpDetailProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.fast_eye_processor = FastEyeTierProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.smart_auto_processor = SmartAutoEyeProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.real_image_processor = RealImageDrawingProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        )
-        self.smooth_eye_processor = SmoothAutoEyeProcessor(
-            a4_width_mm=A4_WIDTH_MM, 
-            a4_height_mm=A4_HEIGHT_MM, 
-            min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        ) 
+        self.classic_processor = ClassicImageProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.advanced_processor = AdvancedImageProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.tiered_processor = TieredContourProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.sharp_processor = SharpDetailProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.fast_eye_processor = FastEyeTierProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.smart_auto_processor = SmartAutoEyeProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.real_image_processor = RealImageDrawingProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX)
+        self.smooth_eye_processor = SmoothAutoEyeProcessor(A4_WIDTH_MM, A4_HEIGHT_MM, MIN_CONTOUR_LENGTH_PX) 
 
         # Processing Mode Variables
         self.processing_mode_var = tk.StringVar(value="classic")
@@ -117,7 +97,7 @@ class RUNME_GUI:
         self.testing_mode = False  
 
         # Drawing process related variables
-        self.image_path_var = tk.StringVar() # Moved to init for QR integration
+        self.image_path_var = tk.StringVar() 
         self.current_image_path = None
         self.threshold_options_data = {}
         self.edge_preview_paths = {}
@@ -136,7 +116,8 @@ class RUNME_GUI:
         # Image TK references to prevent garbage collection
         self.orig_imgtk = None
         self.proc_imgtk = None
-        self.qr_imgtk = None
+        self.history_thumbnails = [] # To hold filmstrip thumbnails
+        self.is_on_input_page = False # Tracking for auto-refresh
 
         # Packing Checklist variables
         self.pack_check_1 = tk.BooleanVar()
@@ -158,10 +139,7 @@ class RUNME_GUI:
 
         # Status tracking for previous drawing attempts
         self.last_drawing_status = {
-            "total_commands": 0,
-            "completed_commands": 0,
-            "status": "None",
-            "error_message": ""
+            "total_commands": 0, "completed_commands": 0, "status": "None", "error_message": ""
         }
         
         # Resume-related variables
@@ -172,14 +150,82 @@ class RUNME_GUI:
         # Start the application
         self.main_page()
 
+    # --- QR Server & Background Handling ---
+    def start_qr_server_bg(self):
+        """Starts the Flask server and Cloudflare tunnel silently on app launch."""
+        try:
+            from qr_upload_server import start_server_and_tunnel
+            url, proc = start_server_and_tunnel(self.on_qr_image_received)
+            if url:
+                self.tunnel_url = url
+                logging.info(f"QR Background Server live at: {url}")
+            else:
+                logging.error("Failed to generate Cloudflare Tunnel URL. Check if cloudflared is installed.")
+        except Exception as e:
+            logging.error(f"Error starting QR server: {e}")
+
+    def show_qr_popup(self):
+        """Universal popup window to show the QR code without leaving the current page."""
+        popup = tk.Toplevel(self.window)
+        popup.title("Scan to Upload")
+        popup.geometry("350x400")
+        popup.attributes("-topmost", True) 
+        
+        if not self.tunnel_url:
+            tk.Label(popup, text="Server is still starting...\nPlease check your internet or cloudflared installation.", fg="orange").pack(pady=50)
+            tk.Button(popup, text="Close", command=popup.destroy).pack(pady=10)
+            return
+            
+        tk.Label(popup, text="Scan with phone to upload to Queue:", font=("Arial", 11, "bold")).pack(pady=10)
+        
+        qr = qrcode.QRCode(box_size=8, border=2)
+        qr.add_data(self.tunnel_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        popup.qr_imgtk = ImageTk.PhotoImage(image=img)
+        tk.Label(popup, image=popup.qr_imgtk).pack(pady=10)
+
+        tk.Button(popup, text="Close", command=popup.destroy, width=15).pack(pady=10)
+
+    def on_qr_image_received(self, filepath):
+        """Silently queues uploaded images from the server."""
+        def handle_upload():
+            hist_path = self._copy_to_history(filepath)
+            self.image_queue.append(hist_path)
+            logging.info(f"Image received and queued: {hist_path}")
+            
+            # Update UI elements dynamically if they are currently rendered on screen
+            if hasattr(self, 'queue_notification_label') and self.queue_notification_label.winfo_exists():
+                self.queue_notification_label.config(text=f"New images in queue: {len(self.image_queue)}")
+            
+            # Auto-refresh the visual gallery if the user is on the input page
+            if self.is_on_input_page:
+                self.input_image_page()
+                
+        self.window.after(0, handle_upload)
+
+    def _copy_to_history(self, filepath):
+        """Copies an image into the history directory with a timestamp."""
+        if not filepath or not os.path.exists(filepath): 
+            return filepath
+            
+        ext = os.path.splitext(filepath)[1]
+        if not ext: ext = ".png"
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"image_{timestamp}{ext}"
+        new_path = os.path.join(self.history_dir, filename)
+        
+        shutil.copy2(filepath, new_path)
+        return new_path
+
     # --- Page Navigation ---
     def main_page(self):
         self.clear_frame()
         tk.Label(self.main_frame, text="Robotics Drawing System", font=("Arial", 16)).pack(pady=10)
-        tk.Button(self.main_frame, text="Setup Connection & Draw",
-                  command=self.connection_setup_page, width=30).pack(pady=5)
-        tk.Button(self.main_frame, text="Exit",
-                  command=self.on_window_close, width=30).pack(pady=5)
+        tk.Button(self.main_frame, text="Setup Connection & Draw", command=self.connection_setup_page, width=30).pack(pady=5)
+        tk.Button(self.main_frame, text="Exit", command=self.on_window_close, width=30).pack(pady=5)
 
     def connection_setup_page(self):
         self.clear_frame()
@@ -187,10 +233,8 @@ class RUNME_GUI:
 
         connection_frame = tk.Frame(self.main_frame)
         connection_frame.pack(pady=10)
-        tk.Radiobutton(connection_frame, text=f"Simulation: {SIMULATION_HOST}:{SIMULATION_PORT}",
-                       variable=self.connection_var, value="simulation").pack(anchor='w')
-        tk.Radiobutton(connection_frame, text=f"Real Robot: {REAL_ROBOT_HOST}:{REAL_ROBOT_PORT}",
-                       variable=self.connection_var, value="real").pack(anchor='w')
+        tk.Radiobutton(connection_frame, text=f"Simulation: {SIMULATION_HOST}:{SIMULATION_PORT}", variable=self.connection_var, value="simulation").pack(anchor='w')
+        tk.Radiobutton(connection_frame, text=f"Real Robot: {REAL_ROBOT_HOST}:{REAL_ROBOT_PORT}", variable=self.connection_var, value="real").pack(anchor='w')
 
         self.connect_button = tk.Button(self.main_frame, text="Connect", command=self.establish_connection, width=20)
         self.reconnect_button = tk.Button(self.main_frame, text="Reconnect & Resume", command=self.establish_connection, width=20)
@@ -238,11 +282,8 @@ class RUNME_GUI:
             tk.Label(status_frame, text="Previous Drawing Status:", font=("Arial", 10, "bold")).pack(anchor='w')
             status_text = f"Status: {last_status}"
             if self.last_drawing_status["total_commands"] > 0:
-                status_text += f" (Stopped at command {self.last_drawing_status['completed_commands'] + 1}" \
-                               f" of {self.last_drawing_status['total_commands']})"
+                status_text += f" (Stopped at command {self.last_drawing_status['completed_commands'] + 1} of {self.last_drawing_status['total_commands']})"
             tk.Label(status_frame, text=status_text).pack(anchor='w', padx=5)
-            if self.last_drawing_status["error_message"]:
-                tk.Label(status_frame, text=f"Details: {self.last_drawing_status['error_message']}", wraplength=400).pack(anchor='w', padx=5)
 
         controls_frame = tk.Frame(self.main_frame, pady=5, relief=tk.GROOVE, borderwidth=2)
         controls_frame.pack(pady=10, padx=10, fill='x')
@@ -268,15 +309,10 @@ class RUNME_GUI:
         self.pack_button = tk.Button(controls_frame, text="Packing Position", command=self.packing_checklist_page, bg="#FFCCCB")
         self.pack_button.grid(row=5, column=0, columnspan=3, pady=5)
 
-        # --- NEW FEATURE: QR Upload ---
-        tk.Button(self.main_frame, text="Sent Image via QR",
-                  command=self.show_qr_upload_page, width=30, bg="#d4edda").pack(pady=5)
-        
-        tk.Button(self.main_frame, text="Input Image to Draw",
-                  command=self.input_image_page, width=30).pack(pady=5)
-                  
-        tk.Button(self.main_frame, text="Disconnect",
-                  command=self.close_and_return_main, width=30).pack(pady=5)
+        # --- Main Navigation ---
+        tk.Button(self.main_frame, text="Show QR Upload Code", command=self.show_qr_popup, width=30, bg="#d4edda").pack(pady=5)
+        tk.Button(self.main_frame, text="Input Image to Draw", command=self.input_image_page, width=30).pack(pady=5)
+        tk.Button(self.main_frame, text="Disconnect", command=self.close_and_return_main, width=30).pack(pady=5)
 
     # --- Packing Position Workflow ---
     def packing_checklist_page(self):
@@ -312,19 +348,14 @@ class RUNME_GUI:
     def execute_packing_sequence(self):
         if hasattr(self, 'confirm_pack_button') and self.confirm_pack_button.winfo_exists():
             self.confirm_pack_button.config(state=tk.DISABLED, text="Sending...")
-        
-        logging.info("Sending robot to Packing Position (MoveAbsJ).")
         threading.Thread(target=self._send_packing_thread, daemon=True).start()
 
     def _send_packing_thread(self):
-        command = "PACK"
-        if self.send_message_internal(command):
+        if self.send_message_internal("PACK"):
             response = self.receive_message_internal(timeout=10.0)
             if response == "R":
-                logging.info("Packing command confirmed by robot.")
                 self.window.after(0, lambda: messagebox.showinfo("Packing", "Command sent. Robot should be moving to packing position."))
             else:
-                logging.error(f"Packing command failed confirmation. Got: {response}")
                 self.window.after(0, lambda: messagebox.showerror("Error", f"Robot did not confirm packing command. Got: {response}"))
         else:
             self.window.after(0, lambda: messagebox.showerror("Connection Error", "Failed to send packing command."))
@@ -353,14 +384,11 @@ class RUNME_GUI:
         if hasattr(self, 'safe_center_button') and self.safe_center_button.winfo_exists():
             self.safe_center_button.config(state=tk.DISABLED)
         
-        logging.info(f"Sending robot to safe center (0, {safe_z}, 0)")
         threading.Thread(target=self._send_command_sequence_thread, args=([(0, safe_z, 0)], self.safe_center_button), daemon=True).start()
 
     def go_home_action(self):
         if hasattr(self, 'go_home_button') and self.go_home_button.winfo_exists():
             self.go_home_button.config(state=tk.DISABLED)
-        
-        logging.info(f"Sending robot to home position {ROBOT_HOME_POSITION}")
         threading.Thread(target=self._send_command_sequence_thread, args=([ROBOT_HOME_POSITION], self.go_home_button), daemon=True).start()
 
     def test_workspace_action(self):
@@ -383,7 +411,6 @@ class RUNME_GUI:
             (0, pen_up_z, 0)
         ]
         
-        logging.info("Starting workspace test...")
         threading.Thread(target=self._send_command_sequence_thread, args=(workspace_path, self.test_workspace_button), daemon=True).start()
 
     def _send_command_sequence_thread(self, commands: List[Tuple], button_to_re_enable: tk.Button):
@@ -392,17 +419,13 @@ class RUNME_GUI:
 
         for i, (x, z, y) in enumerate(commands):
             if self.cancel_requested:
-                logging.info("Test sequence cancelled.")
                 break
             
             command_str = f"{x:.2f},{z:.2f},{y:.2f}"
-            logging.info(f"Sending command {i+1}/{len(commands)}: {command_str}")
-            
             if self.send_message_internal(command_str):
                 response_r = self.receive_message_internal(timeout=10.0)
                 if response_r != "R":
                     error_msg = f"Robot did not confirm receipt (R) for command {i+1}. Got: '{response_r}'"
-                    logging.error(error_msg)
                     self.window.after(0, lambda: messagebox.showerror("Test Failed", error_msg))
                     break
             else:
@@ -411,77 +434,86 @@ class RUNME_GUI:
         
         if button_to_re_enable and button_to_re_enable.winfo_exists():
             self.window.after(0, lambda: button_to_re_enable.config(state=tk.NORMAL, text=original_text))
-        logging.info(f"Sequence '{original_text}' finished.")
 
-    # --- QR Upload Workflow ---
-    def show_qr_upload_page(self):
-        """Displays a QR code for mobile users to upload images directly."""
-        self.clear_frame()
-        tk.Label(self.main_frame, text="Upload Image via QR", font=("Arial", 16)).pack(pady=10)
-        
-        status_label = tk.Label(self.main_frame, text="Starting server and Cloudflare tunnel... Please wait.", fg="blue")
-        status_label.pack(pady=10)
-
-        qr_frame = tk.Frame(self.main_frame)
-        qr_frame.pack(pady=10)
-
-        tk.Button(self.main_frame, text="Cancel & Go Back", command=self.drawing_options_page, width=20).pack(pady=20)
-
-        def start_server():
-            # Import our new server module
-            from qr_upload_server import start_server_and_tunnel
-            url, proc = start_server_and_tunnel(self.on_qr_image_received)
-            if url:
-                self.window.after(0, lambda: display_qr(url))
-            else:
-                self.window.after(0, lambda: status_label.config(
-                    text="Failed to start Cloudflare tunnel. Is 'cloudflared' installed and in PATH?", fg="red"
-                ))
-
-        def display_qr(url):
-            status_label.config(text=f"Scan the QR code below with your phone.\nTunnel URL: {url}", fg="green")
-            
-            # Generate the visual QR Image
-            qr = qrcode.QRCode(box_size=10, border=4)
-            qr.add_data(url)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            
-            # Convert to Tkinter compatible PhotoImage
-            self.qr_imgtk = ImageTk.PhotoImage(image=img)
-            tk.Label(qr_frame, image=self.qr_imgtk).pack()
-
-        # Run setup in background to keep UI unblocked
-        threading.Thread(target=start_server, daemon=True).start()
-
-    def on_qr_image_received(self, filepath):
-        """Callback triggered automatically by the Flask server when an image uploads."""
-        def transition_to_processing():
-            messagebox.showinfo("Image Received", "Image successfully uploaded from mobile! Please select the algorithm mode.")
-            
-            # 1. Update the variables with the newly uploaded file path
-            self.image_path_var.set(filepath)
-            self.current_image_path = filepath
-            self.user_eye_points = []
-            
-            # 2. Redirect the operator to the Input Image page to select the mode
-            self.input_image_page()
-            
-        # Must execute GUI changes on the main thread
-        self.window.after(0, transition_to_processing)
     # --- Input Image Workflow ---
     def input_image_page(self):
         self.clear_frame()
+        self.is_on_input_page = True # Flag for auto-refresh
+        
         tk.Label(self.main_frame, text="Input Image to Draw", font=("Arial", 16)).pack(pady=10)
 
         entry_frame = tk.Frame(self.main_frame)
         entry_frame.pack(pady=5, fill='x', padx=10)
-        tk.Label(entry_frame, text="Image Path:").pack(side=tk.LEFT)
+        tk.Label(entry_frame, text="Active Image:").pack(side=tk.LEFT)
         
         path_entry = tk.Entry(entry_frame, textvariable=self.image_path_var, width=50)
         path_entry.pack(side=tk.LEFT, fill='x', expand=True, padx=5)
         tk.Button(entry_frame, text="Browse...", command=self.browse_image_file).pack(side=tk.LEFT)
 
+        # --- Rendered Visual History / Queue Gallery ---
+        history_frame = tk.Frame(self.main_frame, pady=10, relief=tk.SUNKEN, borderwidth=1)
+        history_frame.pack(fill='x', padx=10)
+        
+        header_frame = tk.Frame(history_frame)
+        header_frame.pack(fill='x', padx=5, pady=5)
+        tk.Label(header_frame, text="Image Queue & History (Click image to select):", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        tk.Button(header_frame, text="Show QR Upload Code", command=self.show_qr_popup, bg="#d4edda", padx=10).pack(side=tk.RIGHT)
+        
+        # Scrollable Canvas for Thumbnails
+        canvas_frame = tk.Frame(history_frame, height=150)
+        canvas_frame.pack(fill='x', expand=True, padx=5, pady=5)
+        canvas_frame.pack_propagate(False) # Keep height constrained
+        
+        canvas = tk.Canvas(canvas_frame, bg="#f9f9f9", highlightthickness=0)
+        scrollbar = tk.Scrollbar(canvas_frame, orient="horizontal", command=canvas.xview)
+        scrollable_frame = tk.Frame(canvas, bg="#f9f9f9")
+        
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(xscrollcommand=scrollbar.set)
+        
+        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        def load_selected_from_history(full_path):
+            if full_path in self.image_queue:
+                self.image_queue.remove(full_path)
+            self.image_path_var.set(full_path)
+            self.current_image_path = full_path
+            self.user_eye_points = []
+            self.input_image_page() # Refresh UI to remove queued tags
+
+        if os.path.exists(self.history_dir):
+            hist_files = sorted(os.listdir(self.history_dir), reverse=True) # Newest first
+            for f in hist_files:
+                full_path = os.path.join(self.history_dir, f)
+                try:
+                    img = Image.open(full_path)
+                    img.thumbnail((100, 100))
+                    photo = ImageTk.PhotoImage(img)
+                    self.history_thumbnails.append(photo)
+                    
+                    item_frame = tk.Frame(scrollable_frame, bg="#f9f9f9", padx=5)
+                    item_frame.pack(side=tk.LEFT, fill=tk.Y)
+                    
+                    # Apply styling for Queued vs History
+                    is_queued = full_path in self.image_queue
+                    border_color = "red" if is_queued else "gray"
+                    border_width = 3 if is_queued else 1
+                    
+                    btn = tk.Button(item_frame, image=photo, command=lambda p=full_path: load_selected_from_history(p), 
+                                    relief=tk.SOLID, bd=border_width, activebackground=border_color)
+                    btn.pack()
+                    
+                    if is_queued:
+                        tk.Label(item_frame, text="QUEUED", fg="red", font=("Arial", 8, "bold"), bg="#f9f9f9").pack()
+                    else:
+                        tk.Label(item_frame, text="History", fg="gray", font=("Arial", 8), bg="#f9f9f9").pack()
+                        
+                except Exception as e:
+                    logging.error(f"Error loading thumbnail for {f}: {e}")
+
+        # --- Modes ---
         mode_frame = tk.Frame(self.main_frame, pady=10)
         mode_frame.pack()
         tk.Label(mode_frame, text="Select Algorithm Mode:", font=("Arial", 10, "bold")).pack()
@@ -500,7 +532,7 @@ class RUNME_GUI:
         tk.Label(tier_frame, text="Number of Tiers (Modes 3, 5, 6 & 8):").pack(side=tk.LEFT)
         tk.Scale(tier_frame, variable=self.tier_var, from_=2, to=60, orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=10)
 
-        tk.Button(self.main_frame, text="Process Image", command=self.process_input_image, width=20).pack(pady=10)
+        tk.Button(self.main_frame, text="Process Image", command=self.process_input_image, width=20, bg="#cce5ff").pack(pady=10)
         tk.Button(self.main_frame, text="Back", command=self.drawing_options_page, width=20).pack(pady=10)
 
     def browse_image_file(self):
@@ -509,7 +541,9 @@ class RUNME_GUI:
             filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All Files", "*.*")]
         )
         if filepath:
-            self.image_path_var.set(filepath)
+            hist_path = self._copy_to_history(filepath)
+            self.image_path_var.set(hist_path)
+            self.current_image_path = hist_path
 
     def process_input_image(self):
         filepath = self.image_path_var.get()
@@ -518,7 +552,7 @@ class RUNME_GUI:
             return
         
         self.current_image_path = filepath
-        self.user_eye_points = [] # Clear user interactive clicks when loading a new image
+        self.user_eye_points = [] 
         self.show_threshold_options(self.current_image_path)
 
     # --- Threshold Selection Workflow ---
@@ -567,7 +601,6 @@ class RUNME_GUI:
         options_frame = tk.Frame(right_frame)
         options_frame.pack(pady=5, fill=tk.BOTH, expand=True)
 
-        # Inject interactive UI controls specifically for Mode 5, 6, 7 & 8
         if mode in ["fast_eye", "smart_auto", "real_image", "smooth_eye"]:
             instruction_frame = tk.Frame(options_frame)
             instruction_frame.pack(pady=5)
@@ -602,18 +635,15 @@ class RUNME_GUI:
         thumb_w, thumb_h = self.preview_thumb_size
         orig_w, orig_h = self.preview_orig_size
         
-        # Ignore clicks completely outside the image bounds
         if x > thumb_w or y > thumb_h: 
             return
             
-        # Map the clicked coordinate back to the original full-size image math
         orig_x = int((x / thumb_w) * orig_w)
         orig_y = int((y / thumb_h) * orig_h)
         
         self.user_eye_points.append((orig_x, orig_y))
         logging.info(f"Added eye fill target at: {orig_x}, {orig_y}")
         
-        # Instantly re-run the processing loop to visually update the UI
         self.show_threshold_options(self.current_image_path)
 
     def _process_threshold_options_thread(self, image_path, options_frame, loading_label, pen_down_z):
@@ -621,12 +651,10 @@ class RUNME_GUI:
         preview_paths = {}
         mode = self.processing_mode_var.get()
 
-        # Build dynamic list of options based on mode
         options_to_run = []
         if mode in ["classic", "advanced", "sharp"]:
             options_to_run = THRESHOLD_OPTIONS 
         elif mode == "real_image":
-            # Mode 7 is a hardcoded shortcut, so it only presents one option
             options_to_run.append(("Optimal Real Image (60 Tiers, Medium Pass)", 0, 0))
         elif mode == "smooth_eye":
             base_tiers = self.tier_var.get()
@@ -644,13 +672,11 @@ class RUNME_GUI:
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 4)", base_tiers, 12))
             options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Maximum)", base_tiers, 13))
         else:
-            # Modes 3, 5, 6: Give variations for Detail Level using the chosen tier count
             base_tiers = self.tier_var.get()
             options_to_run.append((f"{base_tiers} Tiers (High Detail Edge Pass)", base_tiers, 1))
             options_to_run.append((f"{base_tiers} Tiers (Medium Detail Edge Pass)", base_tiers, 2))
             options_to_run.append((f"{base_tiers} Tiers (Low Detail Edge Pass)", base_tiers, 3))
 
-        # We define a helper block to be run inside the ThreadPool
         def _run_processor_for_option(i, label, t1, t2):
             logging.info(f"Processing option: {label}")
             preview_path = TMP_EDGE_OUTPUT_PATH.format(i)
@@ -701,12 +727,9 @@ class RUNME_GUI:
             valid_preview = preview_path if os.path.exists(preview_path) else None
             return label, result_data, valid_preview
 
-        # 🚀 Use ThreadPoolExecutor to run image processing filters in parallel
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # Submit all options to the pool
             futures = [executor.submit(_run_processor_for_option, i, label, t1, t2) for i, (label, t1, t2) in enumerate(options_to_run)]
             
-            # Retrieve results as they finish
             for future in concurrent.futures.as_completed(futures):
                 try:
                     label, result_data, valid_preview = future.result()
@@ -715,7 +738,6 @@ class RUNME_GUI:
                 except Exception as e:
                     logging.error(f"Error executing future: {e}")
 
-        # Post results back to the main UI thread
         self.window.after(0, lambda: self._display_threshold_options(options_frame, loading_label, results, preview_paths, options_to_run))
 
     def _display_threshold_options(self, options_frame, loading_label, results, preview_paths, options_to_run):
@@ -731,7 +753,6 @@ class RUNME_GUI:
                  count = option_data["count"]
                  time_str = option_data["time_str"]
                  
-                 # Clean up the display text based on the mode
                  if mode in ["tiered", "fast_eye", "smart_auto", "real_image", "smooth_eye"]:
                      radio_text = f"{label} - Cmds: {count}, Est: {time_str}"
                  else:
@@ -755,10 +776,9 @@ class RUNME_GUI:
          tk.Button(button_frame, text="Confirm and Draw", command=self.confirm_and_start_drawing, width=20).pack(side=tk.LEFT, padx=5)
          tk.Button(button_frame, text="Save Points to File", command=self.save_points_to_file, width=20).pack(side=tk.LEFT, padx=5)
          tk.Button(button_frame, text="Save Processed Image", command=self.save_processed_image_to_file, width=22).pack(side=tk.LEFT, padx=5) 
-         tk.Button(button_frame, text="Back", command=self.drawing_options_page, width=20).pack(side=tk.LEFT, padx=5)
+         tk.Button(button_frame, text="Back", command=self.input_image_page, width=20).pack(side=tk.LEFT, padx=5)
 
     def save_processed_image_to_file(self):
-        """Allows the user to save the currently selected processed image to a file."""
         selected_label = self.selected_threshold_option.get()
         if not selected_label:
             messagebox.showwarning("Selection Needed", "Please select a drawing style option first.")
@@ -804,7 +824,7 @@ class RUNME_GUI:
 
         try:
             with open(filepath, 'w') as f:
-                f.write("X, Z, Y\n") # Header
+                f.write("X, Z, Y\n") 
                 for x, z, y in commands: f.write(f"{x:.3f},{z:.3f},{y:.3f}\n")
             messagebox.showinfo("Success", f"Drawing points successfully saved to:\n{filepath}")
         except Exception as e:
@@ -816,7 +836,6 @@ class RUNME_GUI:
               try:
                    img = Image.open(preview_path)
                    
-                   # Save mathematical sizes so we can scale user clicks later
                    self.preview_orig_size = img.size
                    img.thumbnail((600, 600))
                    self.preview_thumb_size = img.size
@@ -825,7 +844,6 @@ class RUNME_GUI:
                    self.preview_label.imgtk = imgtk
                    self.preview_label.configure(image=imgtk)
                    
-                   # Bind the interactive clicking feature for Modes 5, 6, 7 & 8
                    self.preview_label.bind("<Button-1>", self.on_preview_click)
               except Exception as e:
                    logging.error(f"Error loading preview image {preview_path}: {e}")
@@ -867,7 +885,11 @@ class RUNME_GUI:
     # --- Drawing Execution Workflow ---
     def show_drawing_progress_page(self, total_commands, current_progress=0, status_message="Starting..."):
          self.clear_frame()
-         tk.Label(self.main_frame, text="Drawing in Progress...", font=("Arial", 16)).pack(pady=10)
+         
+         header_frame = tk.Frame(self.main_frame)
+         header_frame.pack(fill=tk.X, pady=10)
+         tk.Label(header_frame, text="Drawing in Progress...", font=("Arial", 16)).pack(side=tk.LEFT)
+         tk.Button(header_frame, text="Show QR Upload Code", command=self.show_qr_popup, bg="#d4edda", padx=10).pack(side=tk.RIGHT)
 
          image_frame = tk.Frame(self.main_frame)
          image_frame.pack(pady=10)
@@ -902,6 +924,11 @@ class RUNME_GUI:
              except Exception as e:
                  logging.error(f"Error loading processed image for progress page: {e}")
                  tk.Label(proc_frame, text="Preview Unavailable").pack()
+
+         self.queue_notification_label = tk.Label(self.main_frame, text="", fg="green", font=("Arial", 10, "bold"))
+         self.queue_notification_label.pack(pady=5)
+         if hasattr(self, 'image_queue') and self.image_queue:
+             self.queue_notification_label.config(text=f"New images in queue: {len(self.image_queue)}")
 
          self.status_label = tk.Label(self.main_frame, textvariable=self.progress_text_var)
          self.status_label.pack(pady=5)
@@ -999,7 +1026,7 @@ class RUNME_GUI:
             self.resume_commands = None
             self.resume_start_index_global = 0
 
-        self.window.after(2000, self.drawing_options_page)
+        self.window.after(2000, self.input_image_page)
 
     def update_final_status(self, message):
         if self.eta_update_id:
@@ -1184,6 +1211,8 @@ class RUNME_GUI:
 
     # --- Utility Methods ---
     def clear_frame(self):
+        self.is_on_input_page = False # Reset flag whenever we leave the page
+        
         if hasattr(self, 'eta_update_id') and self.eta_update_id:
             self.window.after_cancel(self.eta_update_id)
             self.eta_update_id = None
@@ -1192,7 +1221,7 @@ class RUNME_GUI:
         # Free up Image resources
         self.orig_imgtk = None
         self.proc_imgtk = None
-        self.qr_imgtk = None
+        self.history_thumbnails = [] # Clears out refs so Tkinter doesn't leak memory
         
         self.progress_bar = None; self.status_label = None; self.cancel_button = None
         self.connect_button = None; self.reconnect_button = None; self.preview_label = None; self.pause_resume_button = None
