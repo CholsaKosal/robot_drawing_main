@@ -4,3 +4,4 @@ Pillow
 mediapipe
 flask
 qrcode
+rembg

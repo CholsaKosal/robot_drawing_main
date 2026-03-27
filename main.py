@@ -108,6 +108,7 @@ class RUNME_GUI:
         self.cancel_button = None
         self.reconnect_button = None
         self.test_mode_button = None 
+        self.remove_bg_button = None
         
         # Interactive state
         self.user_eye_points = []
@@ -218,6 +219,61 @@ class RUNME_GUI:
         
         shutil.copy2(filepath, new_path)
         return new_path
+
+    # --- Background Removal Feature ---
+    def remove_background_action(self):
+        if not self.current_image_path or not os.path.exists(self.current_image_path):
+            messagebox.showwarning("No Image", "Please select an image first.")
+            return
+
+        if self.remove_bg_button and self.remove_bg_button.winfo_exists():
+            self.remove_bg_button.config(state=tk.DISABLED, text="Removing...")
+        self.window.update()
+
+        threading.Thread(target=self._remove_bg_thread, daemon=True).start()
+
+    def _remove_bg_thread(self):
+        try:
+            from rembg import remove
+            from PIL import Image
+            
+            input_image = Image.open(self.current_image_path)
+            
+            # rembg removes the background and makes it transparent
+            output_image = remove(input_image)
+            
+            # Convert transparent background to solid white so the drawing robot doesn't
+            # attempt to draw the boundary of the alpha channel box.
+            white_bg = Image.new("RGB", output_image.size, (255, 255, 255))
+            if output_image.mode in ('RGBA', 'LA') or (output_image.mode == 'P' and 'transparency' in output_image.info):
+                white_bg.paste(output_image, mask=output_image.split()[3]) # Use alpha channel as mask
+            else:
+                white_bg.paste(output_image)
+
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_filename = f"image_nobg_{timestamp}.png"
+            new_path = os.path.join(self.history_dir, new_filename)
+            white_bg.save(new_path)
+
+            self.window.after(0, lambda: self._on_bg_removed_success(new_path))
+
+        except ImportError:
+            self.window.after(0, lambda: messagebox.showerror("Dependency Missing", "Please install rembg.\nRun: pip install rembg"))
+            self.window.after(0, self._reset_bg_button)
+        except Exception as e:
+            logging.error(f"Background removal failed: {e}")
+            self.window.after(0, lambda: messagebox.showerror("Error", f"Failed to remove background: {e}"))
+            self.window.after(0, self._reset_bg_button)
+
+    def _on_bg_removed_success(self, new_path):
+        self.image_path_var.set(new_path)
+        self.current_image_path = new_path
+        self._reset_bg_button()
+        self.input_image_page() # Refresh the page to update the active image and history timeline
+
+    def _reset_bg_button(self):
+        if self.remove_bg_button and self.remove_bg_button.winfo_exists():
+            self.remove_bg_button.config(state=tk.NORMAL, text="Remove Background")
 
     # --- Page Navigation ---
     def main_page(self):
@@ -445,9 +501,13 @@ class RUNME_GUI:
         entry_frame.pack(pady=5, fill='x', padx=10)
         tk.Label(entry_frame, text="Active Image:").pack(side=tk.LEFT)
         
-        path_entry = tk.Entry(entry_frame, textvariable=self.image_path_var, width=50)
+        path_entry = tk.Entry(entry_frame, textvariable=self.image_path_var, width=40)
         path_entry.pack(side=tk.LEFT, fill='x', expand=True, padx=5)
         tk.Button(entry_frame, text="Browse...", command=self.browse_image_file).pack(side=tk.LEFT)
+        
+        # New Background Removal Button
+        self.remove_bg_button = tk.Button(entry_frame, text="Remove Background", command=self.remove_background_action, bg="#fff3cd")
+        self.remove_bg_button.pack(side=tk.LEFT, padx=5)
 
         # --- Rendered Visual History / Queue Gallery ---
         history_frame = tk.Frame(self.main_frame, pady=10, relief=tk.SUNKEN, borderwidth=1)
