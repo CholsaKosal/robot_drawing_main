@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import logging
+import threading
 import mediapipe as mp
 from smart_auto_eye_processor import SmartAutoEyeProcessor
 
@@ -8,12 +9,17 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
     """
     Advanced processor that extracts classic contours AND generates 
     hatching (stripes) across the entire grayscale spectrum.
-    Now includes AI MediaPipe Pupil Detection + Interactive Fill,
-    and filters out micro-hatch lines to prevent robot dotting.
+    Includes AI MediaPipe Pupil Detection + Interactive Fill.
+    Highly optimized using Vectorized NumPy and Thread Caching.
     """
     def __init__(self, a4_width_mm: float, a4_height_mm: float, min_contour_length_px: int):
         # Inheriting from SmartAutoEyeProcessor initializes the AI detector
         super().__init__(a4_width_mm, a4_height_mm, min_contour_length_px)
+        
+        # Thread lock and cache to prevent running AI 7 times concurrently
+        self._cache_lock = threading.Lock()
+        self._last_image_hash = None
+        self._last_ai_eyes = []
 
     def image_to_contours_and_hatching(self, image_path_or_array, threshold1, threshold2, num_tiers, save_edge_path=None, user_eye_points=None):
         if user_eye_points is None:
@@ -76,32 +82,41 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
                 for path in paths:
                     cv2.line(hatch_preview_layer, path[0], path[-1], 255, 1)
 
-        # 4. --- AI PUPIL DETECTION & INTERACTIVE FILL ---
+        # 4. --- AI PUPIL DETECTION & INTERACTIVE FILL (WITH CACHE) ---
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced_image = clahe.apply(image)
 
-        ai_eyes = []
-        if self.detector:
-            rgb_image = cv2.cvtColor(enhanced_image, cv2.COLOR_GRAY2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
-            try:
-                results = self.detector.detect(mp_image)
-                if results.face_landmarks:
-                    for face_landmarks in results.face_landmarks:
-                        iris_groups = [[468, 469, 470, 471, 472], [473, 474, 475, 476, 477]]
-                        for iris_indices in iris_groups:
-                            x_coords = [int(face_landmarks[idx].x * image_width) for idx in iris_indices]
-                            y_coords = [int(face_landmarks[idx].y * image_height) for idx in iris_indices]
-                            x_min, x_max = min(x_coords), max(x_coords)
-                            y_min, y_max = min(y_coords), max(y_coords)
-                            pad = 3
-                            ex, ey = max(0, x_min - pad), max(0, y_min - pad)
-                            ew = min(image_width - ex, (x_max - x_min) + (pad * 2))
-                            eh = min(image_height - ey, (y_max - y_min) + (pad * 2))
-                            if ew > 0 and eh > 0:
-                                ai_eyes.append((ex, ey, ew, eh))
-            except Exception as e:
-                logging.error(f"Error during MediaPipe detection: {e}")
+        img_sum = int(image.sum()) if image.size > 0 else 0
+        img_hash = hash((image.shape, img_sum))
+
+        with self._cache_lock:
+            if self._last_image_hash == img_hash:
+                ai_eyes = self._last_ai_eyes
+            else:
+                ai_eyes = []
+                if self.detector:
+                    rgb_image = cv2.cvtColor(enhanced_image, cv2.COLOR_GRAY2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+                    try:
+                        results = self.detector.detect(mp_image)
+                        if results.face_landmarks:
+                            for face_landmarks in results.face_landmarks:
+                                iris_groups = [[468, 469, 470, 471, 472], [473, 474, 475, 476, 477]]
+                                for iris_indices in iris_groups:
+                                    x_coords = [int(face_landmarks[idx].x * image_width) for idx in iris_indices]
+                                    y_coords = [int(face_landmarks[idx].y * image_height) for idx in iris_indices]
+                                    x_min, x_max = min(x_coords), max(x_coords)
+                                    y_min, y_max = min(y_coords), max(y_coords)
+                                    pad = 3
+                                    ex, ey = max(0, x_min - pad), max(0, y_min - pad)
+                                    ew = min(image_width - ex, (x_max - x_min) + (pad * 2))
+                                    eh = min(image_height - ey, (y_max - y_min) + (pad * 2))
+                                    if ew > 0 and eh > 0:
+                                        ai_eyes.append((ex, ey, ew, eh))
+                    except Exception as e:
+                        logging.error(f"Error during MediaPipe detection: {e}")
+                self._last_ai_eyes = ai_eyes
+                self._last_image_hash = img_hash
 
         eye_fill_mask = np.zeros_like(enhanced_image)
 
@@ -128,7 +143,6 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
                             break
 
         # Generate very dense mathematical cross-hatching inside the detected/clicked eyes
-        # We use a smaller min_length_px here (e.g., 4) because pupils have small, tight details
         eye_paths = []
         eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 45, 2, min_length_px=4))
         eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 135, 2, min_length_px=4))
@@ -162,33 +176,74 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
 
     def _generate_hatching_paths(self, binary_mask, angle_deg, spacing_px, min_length_px):
         """
-        Mathematically generates strict straight-line segments bounded by the mask.
-        Filters out lines shorter than min_length_px to prevent robot dotting.
+        Blazing fast Vectorized NumPy segment generator.
+        Safely casts mask to int8 to avoid uint8 underflow bugs during np.diff.
         """
         h, w = binary_mask.shape
         paths = []
 
-        def extract_segments(line_points):
-            current_path = []
-            for x, y in line_points:
-                if 0 <= y < h and 0 <= x < w and binary_mask[y, x] > 0:
-                    current_path.append((x, y))
-                else:
-                    if len(current_path) >= min_length_px:
-                        paths.append([current_path[0], current_path[-1]])
-                    current_path = []
-            # Catch trailing lines
-            if len(current_path) >= min_length_px:
-                paths.append([current_path[0], current_path[-1]])
+        # Convert to boolean, then to int8 (1 and 0) to safely use np.diff 
+        mask_bool = (binary_mask > 0).astype(np.int8)
 
-        if angle_deg == 45:
-            for i in range(0, w + h, spacing_px):
-                extract_segments([(i - t, t) for t in range(max(0, i - w + 1), min(h, i + 1))])
-        elif angle_deg == 135:
-            for i in range(-h, w, spacing_px):
-                extract_segments([(i + t, t) for t in range(max(0, -i), min(h, w - i))])
-        else:
+        if angle_deg == 135:
+            for offset in range(-h + 1, w, spacing_px):
+                diag = np.diagonal(mask_bool, offset=offset)
+                if len(diag) == 0: continue
+                
+                # Fast 1D contiguous segment finder
+                padded = np.pad(diag, (1, 1), mode='constant')
+                diff = np.diff(padded)
+                starts = np.where(diff == 1)[0]
+                ends = np.where(diff == -1)[0]
+                
+                for s, e in zip(starts, ends):
+                    if (e - s) >= min_length_px:
+                        # Map 1D index back to 2D coordinates
+                        if offset >= 0:
+                            y1, x1 = s, offset + s
+                            y2, x2 = (e - 1), offset + (e - 1)
+                        else:
+                            y1, x1 = -offset + s, s
+                            y2, x2 = -offset + (e - 1), (e - 1)
+                        paths.append([(int(x1), int(y1)), (int(x2), int(y2))])
+                        
+        elif angle_deg == 45:
+            flipped_mask = np.fliplr(mask_bool)
+            for offset in range(-h + 1, w, spacing_px):
+                diag = np.diagonal(flipped_mask, offset=offset)
+                if len(diag) == 0: continue
+                
+                padded = np.pad(diag, (1, 1), mode='constant')
+                diff = np.diff(padded)
+                starts = np.where(diff == 1)[0]
+                ends = np.where(diff == -1)[0]
+                
+                for s, e in zip(starts, ends):
+                    if (e - s) >= min_length_px:
+                        if offset >= 0:
+                            y1, x1_flip = s, offset + s
+                            y2, x2_flip = (e - 1), offset + (e - 1)
+                        else:
+                            y1, x1_flip = -offset + s, s
+                            y2, x2_flip = -offset + (e - 1), (e - 1)
+                            
+                        # Map back to original un-flipped X coordinate
+                        x1 = (w - 1) - x1_flip
+                        x2 = (w - 1) - x2_flip
+                        paths.append([(int(x1), int(y1)), (int(x2), int(y2))])
+                        
+        else: # Standard Horizontal
             for y in range(0, h, spacing_px):
-                extract_segments([(x, y) for x in range(w)])
+                row = mask_bool[y, :]
+                if not np.any(row): continue # Skip empty rows
+                
+                padded = np.pad(row, (1, 1), mode='constant')
+                diff = np.diff(padded)
+                starts = np.where(diff == 1)[0]
+                ends = np.where(diff == -1)[0]
+                
+                for s, e in zip(starts, ends):
+                    if (e - s) >= min_length_px:
+                        paths.append([(int(s), int(y)), (int(e - 1), int(y))])
 
         return paths
