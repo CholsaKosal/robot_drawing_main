@@ -6,6 +6,7 @@ import time
 import logging
 import socket
 import shutil
+import concurrent.futures # <--- Parallel Processing
 from typing import List, Tuple, Optional
 from PIL import Image, ImageTk
 
@@ -17,7 +18,7 @@ from sharp_detail_processor import SharpDetailProcessor
 from fast_eye_tier_processor import FastEyeTierProcessor
 from smart_auto_eye_processor import SmartAutoEyeProcessor
 from real_image_drawing_processor import RealImageDrawingProcessor
-from smooth_auto_eye_processor import SmoothAutoEyeProcessor  # <--- NEW IMPORT
+from smooth_auto_eye_processor import SmoothAutoEyeProcessor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -101,7 +102,7 @@ class RUNME_GUI:
             a4_width_mm=A4_WIDTH_MM, 
             a4_height_mm=A4_HEIGHT_MM, 
             min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        ) # <--- NEW PROCESSOR
+        ) 
 
         # Processing Mode Variables
         self.processing_mode_var = tk.StringVar(value="classic")
@@ -427,7 +428,7 @@ class RUNME_GUI:
         tk.Radiobutton(mode_frame, text="Mode 5: Fast Tiered (Interactive Eye Fill)", variable=self.processing_mode_var, value="fast_eye").pack(anchor='w')        
         tk.Radiobutton(mode_frame, text="Mode 6: Smart Auto-Pair Eye Fill + Interactive", variable=self.processing_mode_var, value="smart_auto").pack(anchor='w')
         tk.Radiobutton(mode_frame, text="Mode 7: Real Image Shortcut (60-Tier Medium Pass)", variable=self.processing_mode_var, value="real_image").pack(anchor='w')
-        tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w') # <--- NEW MODE 8
+        tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w')
 
         # Slider specifically for Modes 3, 5, 6, 8
         tier_frame = tk.Frame(mode_frame)
@@ -470,7 +471,7 @@ class RUNME_GUI:
             "fast_eye": "Fast Tiered Mode", 
             "smart_auto": "Smart Auto-Eye Mode",
             "real_image": "Real Image Shortcut Mode",
-            "smooth_eye": "Enhanced Smooth Auto-Eye Mode" # <--- NEW MODE LABEL
+            "smooth_eye": "Enhanced Smooth Auto-Eye Mode"
         }
         mode_str = mode_names.get(mode, mode)
 
@@ -511,7 +512,7 @@ class RUNME_GUI:
                 tk.Label(instruction_frame, text="(Green dots = Auto-detected, Blue dots = Manual clicks)", fg="green").pack()
             tk.Button(instruction_frame, text="Clear Selections", command=self.clear_eye_selections).pack(pady=5)
 
-        loading_label = tk.Label(options_frame, text="Processing options... This may take a moment.")
+        loading_label = tk.Label(options_frame, text="Processing options in parallel...\nThis may take a moment.")
         loading_label.pack()
         self.window.update()
 
@@ -563,11 +564,21 @@ class RUNME_GUI:
         elif mode == "real_image":
             # Mode 7 is a hardcoded shortcut, so it only presents one option
             options_to_run.append(("Optimal Real Image (60 Tiers, Medium Pass)", 0, 0))
-        elif mode == "smooth_eye": # <--- NEW MODE OPTIONS
+        elif mode == "smooth_eye":
             base_tiers = self.tier_var.get()
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Light)", base_tiers, 1))
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Medium)", base_tiers, 2))
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavy)", base_tiers, 3))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 1)", base_tiers, 1))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 2)", base_tiers, 2))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 3)", base_tiers, 3))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 4)", base_tiers, 4))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 5)", base_tiers, 5))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Light)", base_tiers, 6))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Medium)", base_tiers, 7))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavy)", base_tiers, 8))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 1)", base_tiers, 9))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 2)", base_tiers, 10))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 3)", base_tiers, 11))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 4)", base_tiers, 12))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Maximum)", base_tiers, 13))
         else:
             # Modes 3, 5, 6: Give variations for Detail Level using the chosen tier count
             base_tiers = self.tier_var.get()
@@ -575,72 +586,72 @@ class RUNME_GUI:
             options_to_run.append((f"{base_tiers} Tiers (Medium Detail Edge Pass)", base_tiers, 2))
             options_to_run.append((f"{base_tiers} Tiers (Low Detail Edge Pass)", base_tiers, 3))
 
-        for i, (label, t1, t2) in enumerate(options_to_run):
+        # We define a helper block to be run inside the ThreadPool
+        def _run_processor_for_option(i, label, t1, t2):
             logging.info(f"Processing option: {label}")
             preview_path = TMP_EDGE_OUTPUT_PATH.format(i)
+            commands = []
             
             if mode == "advanced":
                 contours_xy, w, h = self.advanced_processor.image_to_contours_and_hatching(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "tiered":
                 contours_xy, w, h = self.tiered_processor.image_to_tiered_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.tiered_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.tiered_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "sharp":
                 contours_xy, w, h = self.sharp_processor.image_to_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.sharp_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.sharp_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "fast_eye":
                 contours_xy, w, h = self.fast_eye_processor.image_to_fast_eye_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.fast_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)                
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.fast_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)                
             elif mode == "smart_auto":
                 contours_xy, w, h = self.smart_auto_processor.image_to_smart_auto_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.smart_auto_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.smart_auto_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "real_image":
                 contours_xy, w, h = self.real_image_processor.image_to_real_image_drawing(
-                    image_path, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.real_image_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
-            elif mode == "smooth_eye": # <--- NEW MODE PROCESSOR ROUTING
+                    image_path, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.real_image_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+            elif mode == "smooth_eye": 
                 contours_xy, w, h = self.smooth_eye_processor.image_to_smooth_auto_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.smooth_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.smooth_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             else:
                 contours_xy, w, h = self.classic_processor.image_to_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.classic_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.classic_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
 
-            if contours_xy is None or w == 0 or h == 0:
-                 logging.warning(f"Failed to process contours for option {label}")
-                 results[label] = None
-                 preview_paths[label] = None
-                 continue
-            
+            result_data = None
             if commands:
                 num_commands = len(commands)
                 est_time_sec = num_commands * TIME_ESTIMATE_FACTOR
                 est_time_min = est_time_sec / 60
-                results[label] = {
+                result_data = {
                     "commands": commands, 
                     "count": num_commands,
                     "time_str": f"{est_time_min:.1f} min"
                 }
-                preview_paths[label] = preview_path if os.path.exists(preview_path) else None
             else:
-                 results[label] = None
-                 preview_paths[label] = None
-                 logging.warning(f"No commands generated for option {label}")
+                logging.warning(f"No commands generated for option {label}")
+            
+            valid_preview = preview_path if os.path.exists(preview_path) else None
+            return label, result_data, valid_preview
 
+        # 🚀 Use ThreadPoolExecutor to run image processing filters in parallel
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Submit all options to the pool
+            futures = [executor.submit(_run_processor_for_option, i, label, t1, t2) for i, (label, t1, t2) in enumerate(options_to_run)]
+            
+            # Retrieve results as they finish
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    label, result_data, valid_preview = future.result()
+                    results[label] = result_data
+                    preview_paths[label] = valid_preview
+                except Exception as e:
+                    logging.error(f"Error executing future: {e}")
+
+        # Post results back to the main UI thread
         self.window.after(0, lambda: self._display_threshold_options(options_frame, loading_label, results, preview_paths, options_to_run))
 
     def _display_threshold_options(self, options_frame, loading_label, results, preview_paths, options_to_run):
