@@ -12,8 +12,25 @@
 
 1.  **Python 3.x**: Ensure Python is installed on your Windows machine.
     * *Note:* When installing Python on Windows, make sure to check the box **"tcl/tk and IDLE"** during the installation process. This is required for the GUI (`tkinter`) to work.
-2.  **ABB RobotStudio**: Required if you are running the simulation mode.
-3.  **Physical Robot**: Required if running in "Real Robot" mode (IP: `192.168.125.1`).
+2.  **Cloudflared (Required for QR Image Upload)**:
+    * Open PowerShell as Administrator and run: `winget install --id Cloudflare.cloudflared`
+    * (Alternatively, download `cloudflared.exe` from Cloudflare GitHub releases and place it in your `PATH` or right next to `main.py`).
+### installing cloudflare linux: 
+Setting up the Cloudflare Tunnel (`cloudflared`) on Ubuntu 24.04 is super straightforward. Because your `qr_upload_server.py` script is designed to automatically generate an anonymous "Quick Tunnel" on the fly, you don't need to worry about complex authentications or background services. You just need the core CLI tool installed on your system. 
+
+Here is how to get it installed and ready for your robot drawing app.
+
+### Step-by-Step Installation
+
+Open your Ubuntu terminal and run the following commands:
+```bash
+wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+cloudflared --version
+
+```
+3.  **ABB RobotStudio**: Required if you are running the simulation mode.
+4.  **Physical Robot**: Required if running in "Real Robot" mode (IP: `192.168.125.1`).
 
 ## Installation
 
@@ -46,10 +63,11 @@
 
 3.  **Using the GUI:**
     * Select **Simulation** or **Real Robot** and click **Connect**.
-    * Upload an image to generate drawing paths.
+    * Upload an image to generate drawing paths (via File Browser or via the new **Sent Image via QR** feature using mobile).
     * Use the **Packing Position** button (located under "Go Home") to safely fold the robot for transport.
 
 ## Troubleshooting
 
 * **"No module named tkinter":** This usually means Python was installed without Tcl/Tk support. Re-run the Python installer, choose "Modify", and ensure "tcl/tk and IDLE" is checked.
+* **"cloudflared executable not found":** You haven't installed the `cloudflared` Tunnel CLI or it is not in your system environment PATH. Use winget to install it.
 * **Connection Refused:** Ensure the firewall is not blocking port `1025` (Real) or `55000` (Sim), and that the RAPID code is actively running in the `SocketAccept` state.

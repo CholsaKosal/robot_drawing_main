@@ -6,8 +6,10 @@ import time
 import logging
 import socket
 import shutil
+import concurrent.futures # <--- Parallel Processing
 from typing import List, Tuple, Optional
 from PIL import Image, ImageTk
+import qrcode # <--- New import for QR generation
 
 # Import our image processing classes
 from classic_image_processor import ClassicImageProcessor
@@ -17,7 +19,7 @@ from sharp_detail_processor import SharpDetailProcessor
 from fast_eye_tier_processor import FastEyeTierProcessor
 from smart_auto_eye_processor import SmartAutoEyeProcessor
 from real_image_drawing_processor import RealImageDrawingProcessor
-from smooth_auto_eye_processor import SmoothAutoEyeProcessor  # <--- NEW IMPORT
+from smooth_auto_eye_processor import SmoothAutoEyeProcessor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -101,7 +103,7 @@ class RUNME_GUI:
             a4_width_mm=A4_WIDTH_MM, 
             a4_height_mm=A4_HEIGHT_MM, 
             min_contour_length_px=MIN_CONTOUR_LENGTH_PX
-        ) # <--- NEW PROCESSOR
+        ) 
 
         # Processing Mode Variables
         self.processing_mode_var = tk.StringVar(value="classic")
@@ -115,6 +117,7 @@ class RUNME_GUI:
         self.testing_mode = False  
 
         # Drawing process related variables
+        self.image_path_var = tk.StringVar() # Moved to init for QR integration
         self.current_image_path = None
         self.threshold_options_data = {}
         self.edge_preview_paths = {}
@@ -133,6 +136,7 @@ class RUNME_GUI:
         # Image TK references to prevent garbage collection
         self.orig_imgtk = None
         self.proc_imgtk = None
+        self.qr_imgtk = None
 
         # Packing Checklist variables
         self.pack_check_1 = tk.BooleanVar()
@@ -264,8 +268,13 @@ class RUNME_GUI:
         self.pack_button = tk.Button(controls_frame, text="Packing Position", command=self.packing_checklist_page, bg="#FFCCCB")
         self.pack_button.grid(row=5, column=0, columnspan=3, pady=5)
 
+        # --- NEW FEATURE: QR Upload ---
+        tk.Button(self.main_frame, text="Sent Image via QR",
+                  command=self.show_qr_upload_page, width=30, bg="#d4edda").pack(pady=5)
+        
         tk.Button(self.main_frame, text="Input Image to Draw",
                   command=self.input_image_page, width=30).pack(pady=5)
+                  
         tk.Button(self.main_frame, text="Disconnect",
                   command=self.close_and_return_main, width=30).pack(pady=5)
 
@@ -404,6 +413,62 @@ class RUNME_GUI:
             self.window.after(0, lambda: button_to_re_enable.config(state=tk.NORMAL, text=original_text))
         logging.info(f"Sequence '{original_text}' finished.")
 
+    # --- QR Upload Workflow ---
+    def show_qr_upload_page(self):
+        """Displays a QR code for mobile users to upload images directly."""
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Upload Image via QR", font=("Arial", 16)).pack(pady=10)
+        
+        status_label = tk.Label(self.main_frame, text="Starting server and Cloudflare tunnel... Please wait.", fg="blue")
+        status_label.pack(pady=10)
+
+        qr_frame = tk.Frame(self.main_frame)
+        qr_frame.pack(pady=10)
+
+        tk.Button(self.main_frame, text="Cancel & Go Back", command=self.drawing_options_page, width=20).pack(pady=20)
+
+        def start_server():
+            # Import our new server module
+            from qr_upload_server import start_server_and_tunnel
+            url, proc = start_server_and_tunnel(self.on_qr_image_received)
+            if url:
+                self.window.after(0, lambda: display_qr(url))
+            else:
+                self.window.after(0, lambda: status_label.config(
+                    text="Failed to start Cloudflare tunnel. Is 'cloudflared' installed and in PATH?", fg="red"
+                ))
+
+        def display_qr(url):
+            status_label.config(text=f"Scan the QR code below with your phone.\nTunnel URL: {url}", fg="green")
+            
+            # Generate the visual QR Image
+            qr = qrcode.QRCode(box_size=10, border=4)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert to Tkinter compatible PhotoImage
+            self.qr_imgtk = ImageTk.PhotoImage(image=img)
+            tk.Label(qr_frame, image=self.qr_imgtk).pack()
+
+        # Run setup in background to keep UI unblocked
+        threading.Thread(target=start_server, daemon=True).start()
+
+    def on_qr_image_received(self, filepath):
+        """Callback triggered automatically by the Flask server when an image uploads."""
+        def transition_to_processing():
+            messagebox.showinfo("Image Received", "Image successfully uploaded from mobile! Please select the algorithm mode.")
+            
+            # 1. Update the variables with the newly uploaded file path
+            self.image_path_var.set(filepath)
+            self.current_image_path = filepath
+            self.user_eye_points = []
+            
+            # 2. Redirect the operator to the Input Image page to select the mode
+            self.input_image_page()
+            
+        # Must execute GUI changes on the main thread
+        self.window.after(0, transition_to_processing)
     # --- Input Image Workflow ---
     def input_image_page(self):
         self.clear_frame()
@@ -412,7 +477,7 @@ class RUNME_GUI:
         entry_frame = tk.Frame(self.main_frame)
         entry_frame.pack(pady=5, fill='x', padx=10)
         tk.Label(entry_frame, text="Image Path:").pack(side=tk.LEFT)
-        self.image_path_var = tk.StringVar()
+        
         path_entry = tk.Entry(entry_frame, textvariable=self.image_path_var, width=50)
         path_entry.pack(side=tk.LEFT, fill='x', expand=True, padx=5)
         tk.Button(entry_frame, text="Browse...", command=self.browse_image_file).pack(side=tk.LEFT)
@@ -427,7 +492,7 @@ class RUNME_GUI:
         tk.Radiobutton(mode_frame, text="Mode 5: Fast Tiered (Interactive Eye Fill)", variable=self.processing_mode_var, value="fast_eye").pack(anchor='w')        
         tk.Radiobutton(mode_frame, text="Mode 6: Smart Auto-Pair Eye Fill + Interactive", variable=self.processing_mode_var, value="smart_auto").pack(anchor='w')
         tk.Radiobutton(mode_frame, text="Mode 7: Real Image Shortcut (60-Tier Medium Pass)", variable=self.processing_mode_var, value="real_image").pack(anchor='w')
-        tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w') # <--- NEW MODE 8
+        tk.Radiobutton(mode_frame, text="Mode 8: Enhanced Smooth Auto-Eye (Adjustable + Dense Fill)", variable=self.processing_mode_var, value="smooth_eye").pack(anchor='w')
 
         # Slider specifically for Modes 3, 5, 6, 8
         tier_frame = tk.Frame(mode_frame)
@@ -470,7 +535,7 @@ class RUNME_GUI:
             "fast_eye": "Fast Tiered Mode", 
             "smart_auto": "Smart Auto-Eye Mode",
             "real_image": "Real Image Shortcut Mode",
-            "smooth_eye": "Enhanced Smooth Auto-Eye Mode" # <--- NEW MODE LABEL
+            "smooth_eye": "Enhanced Smooth Auto-Eye Mode"
         }
         mode_str = mode_names.get(mode, mode)
 
@@ -511,7 +576,7 @@ class RUNME_GUI:
                 tk.Label(instruction_frame, text="(Green dots = Auto-detected, Blue dots = Manual clicks)", fg="green").pack()
             tk.Button(instruction_frame, text="Clear Selections", command=self.clear_eye_selections).pack(pady=5)
 
-        loading_label = tk.Label(options_frame, text="Processing options... This may take a moment.")
+        loading_label = tk.Label(options_frame, text="Processing options in parallel...\nThis may take a moment.")
         loading_label.pack()
         self.window.update()
 
@@ -563,11 +628,21 @@ class RUNME_GUI:
         elif mode == "real_image":
             # Mode 7 is a hardcoded shortcut, so it only presents one option
             options_to_run.append(("Optimal Real Image (60 Tiers, Medium Pass)", 0, 0))
-        elif mode == "smooth_eye": # <--- NEW MODE OPTIONS
+        elif mode == "smooth_eye":
             base_tiers = self.tier_var.get()
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Light)", base_tiers, 1))
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Medium)", base_tiers, 2))
-            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavy)", base_tiers, 3))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 1)", base_tiers, 1))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 2)", base_tiers, 2))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 3)", base_tiers, 3))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 4)", base_tiers, 4))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Lightest 5)", base_tiers, 5))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Light)", base_tiers, 6))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Medium)", base_tiers, 7))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavy)", base_tiers, 8))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 1)", base_tiers, 9))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 2)", base_tiers, 10))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 3)", base_tiers, 11))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Heavier 4)", base_tiers, 12))
+            options_to_run.append((f"{base_tiers} Tiers (Smooth Detail - Maximum)", base_tiers, 13))
         else:
             # Modes 3, 5, 6: Give variations for Detail Level using the chosen tier count
             base_tiers = self.tier_var.get()
@@ -575,72 +650,72 @@ class RUNME_GUI:
             options_to_run.append((f"{base_tiers} Tiers (Medium Detail Edge Pass)", base_tiers, 2))
             options_to_run.append((f"{base_tiers} Tiers (Low Detail Edge Pass)", base_tiers, 3))
 
-        for i, (label, t1, t2) in enumerate(options_to_run):
+        # We define a helper block to be run inside the ThreadPool
+        def _run_processor_for_option(i, label, t1, t2):
             logging.info(f"Processing option: {label}")
             preview_path = TMP_EDGE_OUTPUT_PATH.format(i)
+            commands = []
             
             if mode == "advanced":
                 contours_xy, w, h = self.advanced_processor.image_to_contours_and_hatching(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "tiered":
                 contours_xy, w, h = self.tiered_processor.image_to_tiered_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.tiered_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.tiered_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "sharp":
                 contours_xy, w, h = self.sharp_processor.image_to_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.sharp_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.sharp_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "fast_eye":
                 contours_xy, w, h = self.fast_eye_processor.image_to_fast_eye_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.fast_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)                
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.fast_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)                
             elif mode == "smart_auto":
                 contours_xy, w, h = self.smart_auto_processor.image_to_smart_auto_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.smart_auto_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.smart_auto_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "real_image":
                 contours_xy, w, h = self.real_image_processor.image_to_real_image_drawing(
-                    image_path, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.real_image_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
-            elif mode == "smooth_eye": # <--- NEW MODE PROCESSOR ROUTING
+                    image_path, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.real_image_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+            elif mode == "smooth_eye": 
                 contours_xy, w, h = self.smooth_eye_processor.image_to_smooth_auto_tiers(
-                    image_path, t1, t2, 
-                    save_edge_path=preview_path, 
-                    user_eye_points=self.user_eye_points
-                )
-                commands = self.smooth_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                    image_path, t1, t2, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                if contours_xy: commands = self.smooth_eye_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             else:
                 contours_xy, w, h = self.classic_processor.image_to_contours(image_path, t1, t2, save_edge_path=preview_path)
-                commands = self.classic_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
+                if contours_xy: commands = self.classic_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
 
-            if contours_xy is None or w == 0 or h == 0:
-                 logging.warning(f"Failed to process contours for option {label}")
-                 results[label] = None
-                 preview_paths[label] = None
-                 continue
-            
+            result_data = None
             if commands:
                 num_commands = len(commands)
                 est_time_sec = num_commands * TIME_ESTIMATE_FACTOR
                 est_time_min = est_time_sec / 60
-                results[label] = {
+                result_data = {
                     "commands": commands, 
                     "count": num_commands,
                     "time_str": f"{est_time_min:.1f} min"
                 }
-                preview_paths[label] = preview_path if os.path.exists(preview_path) else None
             else:
-                 results[label] = None
-                 preview_paths[label] = None
-                 logging.warning(f"No commands generated for option {label}")
+                logging.warning(f"No commands generated for option {label}")
+            
+            valid_preview = preview_path if os.path.exists(preview_path) else None
+            return label, result_data, valid_preview
 
+        # 🚀 Use ThreadPoolExecutor to run image processing filters in parallel
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Submit all options to the pool
+            futures = [executor.submit(_run_processor_for_option, i, label, t1, t2) for i, (label, t1, t2) in enumerate(options_to_run)]
+            
+            # Retrieve results as they finish
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    label, result_data, valid_preview = future.result()
+                    results[label] = result_data
+                    preview_paths[label] = valid_preview
+                except Exception as e:
+                    logging.error(f"Error executing future: {e}")
+
+        # Post results back to the main UI thread
         self.window.after(0, lambda: self._display_threshold_options(options_frame, loading_label, results, preview_paths, options_to_run))
 
     def _display_threshold_options(self, options_frame, loading_label, results, preview_paths, options_to_run):
@@ -948,7 +1023,7 @@ class RUNME_GUI:
 
                 command_str = f"{x:.2f},{z:.2f},{y:.2f}"
                 
-                # --- NEW: Testing Mode Bypass ---
+                # --- Testing Mode Bypass ---
                 if not self.send_message_internal(command_str):
                     logging.error(f"Connection lost while sending command {i+1}. Preparing to resume.")
                     self.resume_needed = True
@@ -1117,6 +1192,7 @@ class RUNME_GUI:
         # Free up Image resources
         self.orig_imgtk = None
         self.proc_imgtk = None
+        self.qr_imgtk = None
         
         self.progress_bar = None; self.status_label = None; self.cancel_button = None
         self.connect_button = None; self.reconnect_button = None; self.preview_label = None; self.pause_resume_button = None

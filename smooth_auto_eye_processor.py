@@ -35,13 +35,33 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced_image = clahe.apply(image)
 
-        # Mode 8 specific: highly smooth bilateral filters
+        # Mode 8 specific: escalated bilateral filters for an extended speed/smoothness tradeoff
         if filter_mode == 1:
-            smoothed = cv2.bilateralFilter(enhanced_image, d=9, sigmaColor=70, sigmaSpace=70) # Light Smooth
+            smoothed = cv2.bilateralFilter(enhanced_image, d=3, sigmaColor=15, sigmaSpace=15) # Lightest 1 (Max Detail)
         elif filter_mode == 2:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=4, sigmaColor=25, sigmaSpace=25) # Lightest 2
+        elif filter_mode == 3:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=5, sigmaColor=35, sigmaSpace=35) # Lightest 3
+        elif filter_mode == 4:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=6, sigmaColor=45, sigmaSpace=45) # Lightest 4
+        elif filter_mode == 5:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=7, sigmaColor=55, sigmaSpace=55) # Lightest 5
+        elif filter_mode == 6:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=9, sigmaColor=70, sigmaSpace=70) # Light Smooth
+        elif filter_mode == 7:
             smoothed = cv2.bilateralFilter(enhanced_image, d=13, sigmaColor=95, sigmaSpace=95) # Medium Smooth
-        else:
+        elif filter_mode == 8:
             smoothed = cv2.bilateralFilter(enhanced_image, d=17, sigmaColor=130, sigmaSpace=130) # Heavy Smooth
+        elif filter_mode == 9:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=21, sigmaColor=160, sigmaSpace=160) # Heavier 1
+        elif filter_mode == 10:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=25, sigmaColor=190, sigmaSpace=190) # Heavier 2
+        elif filter_mode == 11:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=29, sigmaColor=220, sigmaSpace=220) # Heavier 3
+        elif filter_mode == 12:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=33, sigmaColor=250, sigmaSpace=250) # Heavier 4
+        else:
+            smoothed = cv2.bilateralFilter(enhanced_image, d=37, sigmaColor=255, sigmaSpace=255) # Maximum Smooth
 
         # 2. GENERATE TIERS
         step = 255 / max(2, num_tiers)
@@ -50,13 +70,20 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
         for thresh in thresholds:
             _, binary = cv2.threshold(smoothed, thresh, 255, cv2.THRESH_BINARY)
             
-            # FIX: Use CHAIN_APPROX_NONE to extract ultra-dense raw pixel points, exactly like Mode 1
-            contours_topo, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+            # Use CHAIN_APPROX_NONE to extract ultra-dense raw pixel points
+            raw_contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
             
-            for contour in contours_topo:
+            valid_contours = []
+            for contour in raw_contours:
+                # PREVENT IMAGE BORDER DRAWING: Ignore contours that wrap the entire canvas
+                bx, by, bw, bh = cv2.boundingRect(contour)
+                if bw >= image_width - 2 and bh >= image_height - 2:
+                    continue
+
+                valid_contours.append(contour)
+
                 if cv2.arcLength(contour, closed=True) > self.min_contour_length_px:
                     
-                    # FIX: Removed approxPolyDP completely so it doesn't skip points or cut corners
                     points = contour.squeeze().tolist()
                     if not isinstance(points, list) or not points: continue
                     if isinstance(points[0], int): points = [points]
@@ -64,7 +91,7 @@ class SmoothAutoEyeProcessor(SmartAutoEyeProcessor):
                     
                     if path: all_paths_xy.append(path)
                     
-            cv2.drawContours(preview, contours_topo, -1, 0, 1)
+            cv2.drawContours(preview, valid_contours, -1, 0, 1)
 
         # 3. EXACT 3D IRIS RECOGNITION (MediaPipe Tasks API)
         ai_eyes = []
