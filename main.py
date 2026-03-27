@@ -87,6 +87,7 @@ class RUNME_GUI:
         # Processing Mode Variables
         self.processing_mode_var = tk.StringVar(value="classic")
         self.tier_var = tk.IntVar(value=20)
+        self.invert_density_var = tk.BooleanVar(value=False)
 
         # Connection related variables
         self.connection_var = tk.StringVar(value="simulation")
@@ -591,6 +592,10 @@ class RUNME_GUI:
         tk.Label(tier_frame, text="Number of Tiers (Modes 2, 3, 5, 6 & 8):").pack(side=tk.LEFT)
         tk.Scale(tier_frame, variable=self.tier_var, from_=2, to=60, orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=10)
 
+        # NEW: Invert Density Checkbox
+        self.invert_density_cb = tk.Checkbutton(mode_frame, text="Invert Density (Mode 2: Dense Lines on Lighter Colors)", variable=self.invert_density_var)
+        self.invert_density_cb.pack(pady=5)
+
         tk.Button(self.main_frame, text="Process Image", command=self.process_input_image, width=20, bg="#cce5ff").pack(pady=10)
         tk.Button(self.main_frame, text="Back", command=self.drawing_options_page, width=20).pack(pady=10)
 
@@ -743,8 +748,9 @@ class RUNME_GUI:
             commands = []
             
             if mode == "advanced":
+                invert_density = self.invert_density_var.get()
                 contours_xy, w, h = self.advanced_processor.image_to_contours_and_hatching(
-                    image_path, t1, t2, base_tiers, save_edge_path=preview_path, user_eye_points=self.user_eye_points)
+                    image_path, t1, t2, base_tiers, save_edge_path=preview_path, user_eye_points=self.user_eye_points, invert_density=invert_density)
                 if contours_xy: commands = self.advanced_processor.create_drawing_paths(contours_xy, w, h, pen_down_z, optimize_paths=True)
             elif mode == "tiered":
                 contours_xy, w, h = self.tiered_processor.image_to_tiered_contours(image_path, t1, t2, save_edge_path=preview_path)

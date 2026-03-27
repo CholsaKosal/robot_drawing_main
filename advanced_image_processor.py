@@ -21,7 +21,7 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
         self._last_image_hash = None
         self._last_ai_eyes = []
 
-    def image_to_contours_and_hatching(self, image_path_or_array, threshold1, threshold2, num_tiers, save_edge_path=None, user_eye_points=None):
+    def image_to_contours_and_hatching(self, image_path_or_array, threshold1, threshold2, num_tiers, save_edge_path=None, user_eye_points=None, invert_density=False):
         if user_eye_points is None:
             user_eye_points = []
 
@@ -60,11 +60,17 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
 
         shading_bands = []
         step = 255 / max(2, num_tiers)
-        for i in range(num_tiers - 1): # Ignore the lightest tier (white paper)
+        num_shading_tiers = num_tiers - 1
+        
+        for i in range(num_shading_tiers): # Ignore the lightest tier (white paper)
             min_v = int(i * step)
             max_v = int((i + 1) * step) - 1
             ang = 45 if i % 2 == 0 else 135
-            space = max(2, 4 + (i * 3))
+            
+            # Switch logic based on toggle state
+            space_idx = (num_shading_tiers - 1 - i) if invert_density else i
+            space = max(2, 4 + (space_idx * 3))
+            
             shading_bands.append((min_v, max_v, ang, space))
 
         hatch_preview_layer = np.zeros((image_height, image_width), dtype=np.uint8)
@@ -121,6 +127,7 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
         eye_fill_mask = np.zeros_like(enhanced_image)
 
         # AI Found Eyes -> Extract darkest part (Pupil)
+        # Note: We always keep eye fill dense regardless of the invert_density setting
         for (ex, ey, ew, eh) in ai_eyes:
             eye_roi = blurred[ey:ey+eh, ex:ex+ew]
             min_val, _, _, _ = cv2.minMaxLoc(eye_roi)
