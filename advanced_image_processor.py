@@ -64,7 +64,7 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
         hatch_preview_layer = np.zeros((image_height, image_width), dtype=np.uint8)
         
         # Calculate a healthy minimum length for body/background shading lines
-        min_hatch_len = max(8, self.min_contour_length_px // 3)
+        min_hatch_len = max(15, self.min_contour_length_px // 10)
 
         for min_v, max_v, ang, space in shading_bands:
             mask = cv2.inRange(blurred, min_v, max_v)
