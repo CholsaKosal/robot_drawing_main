@@ -8,7 +8,8 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
     """
     Advanced processor that extracts classic contours AND generates 
     hatching (stripes) across the entire grayscale spectrum.
-    Now includes AI MediaPipe Pupil Detection + Interactive Fill.
+    Now includes AI MediaPipe Pupil Detection + Interactive Fill,
+    and filters out micro-hatch lines to prevent robot dotting.
     """
     def __init__(self, a4_width_mm: float, a4_height_mm: float, min_contour_length_px: int):
         # Inheriting from SmartAutoEyeProcessor initializes the AI detector
@@ -61,12 +62,15 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
             shading_bands.append((min_v, max_v, ang, space))
 
         hatch_preview_layer = np.zeros((image_height, image_width), dtype=np.uint8)
+        
+        # Calculate a healthy minimum length for body/background shading lines
+        min_hatch_len = max(8, self.min_contour_length_px // 3)
 
         for min_v, max_v, ang, space in shading_bands:
             mask = cv2.inRange(blurred, min_v, max_v)
             mask = cv2.bitwise_and(mask, safe_mask) 
             
-            paths = self._generate_hatching_paths(mask, ang, space)
+            paths = self._generate_hatching_paths(mask, ang, space, min_length_px=min_hatch_len)
             if paths:
                 all_paths_xy.extend(paths)
                 for path in paths:
@@ -124,9 +128,10 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
                             break
 
         # Generate very dense mathematical cross-hatching inside the detected/clicked eyes
+        # We use a smaller min_length_px here (e.g., 4) because pupils have small, tight details
         eye_paths = []
-        eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 45, 2))
-        eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 135, 2))
+        eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 45, 2, min_length_px=4))
+        eye_paths.extend(self._generate_hatching_paths(eye_fill_mask, 135, 2, min_length_px=4))
         
         if eye_paths:
             all_paths_xy.extend(eye_paths)
@@ -155,9 +160,10 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
 
         return all_paths_xy, image_width, image_height
 
-    def _generate_hatching_paths(self, binary_mask, angle_deg, spacing_px):
+    def _generate_hatching_paths(self, binary_mask, angle_deg, spacing_px, min_length_px):
         """
         Mathematically generates strict straight-line segments bounded by the mask.
+        Filters out lines shorter than min_length_px to prevent robot dotting.
         """
         h, w = binary_mask.shape
         paths = []
@@ -168,10 +174,11 @@ class AdvancedImageProcessor(SmartAutoEyeProcessor):
                 if 0 <= y < h and 0 <= x < w and binary_mask[y, x] > 0:
                     current_path.append((x, y))
                 else:
-                    if len(current_path) > 1:
+                    if len(current_path) >= min_length_px:
                         paths.append([current_path[0], current_path[-1]])
                     current_path = []
-            if len(current_path) > 1:
+            # Catch trailing lines
+            if len(current_path) >= min_length_px:
                 paths.append([current_path[0], current_path[-1]])
 
         if angle_deg == 45:
