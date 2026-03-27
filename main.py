@@ -66,8 +66,7 @@ class RUNME_GUI:
 
         # --- History & Queue Setup ---
         self.history_dir = os.path.join(DATA_DIR, "temp_history")
-        if os.path.exists(self.history_dir):
-            shutil.rmtree(self.history_dir, ignore_errors=True)
+        # Create directory if it doesn't exist, but DO NOT delete existing files
         os.makedirs(self.history_dir, exist_ok=True)
         self.image_queue = []
         
